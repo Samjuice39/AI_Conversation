@@ -1,0 +1,20 @@
+{
+  "_怎么用": [
+    "1. 把本文件复制一份，改名为 llm_config.json（注意去掉 .example）",
+    "2. 填上 provider / apiKey / model，保存",
+    "3. 重启 app.py，AI 情绪主判定与干预建议即由大模型生成",
+    "留空不填（provider = none）时仅启用明确标注的本地关键词演示，不是 AI 结果。"
+  ],
+
+  "_方案A_Claude": "provider 填 anthropic；需先 pip install anthropic；model 建议 claude-opus-5（想省钱可换 claude-sonnet-5 / claude-haiku-4-5）",
+  "_方案B_DeepSeek": "provider 填 openai；baseUrl 填 https://api.deepseek.com/v1；model 填 deepseek-chat",
+  "_方案C_通义千问": "provider 填 openai；baseUrl 填 https://dashscope.aliyuncs.com/compatible-mode/v1；model 填 qwen-plus",
+  "_方案D_本地Ollama": "provider 填 openai；baseUrl 填 http://127.0.0.1:11434/v1；model 填 qwen2.5:7b；apiKey 随便填一个非空字符串（如 local）",
+  "_说明_openai协议": "凡是兼容 OpenAI /v1/chat/completions 的服务都能用，不需要额外装包",
+
+  "provider": "none",
+  "apiKey": "",
+  "model": "",
+  "baseUrl": "",
+  "timeout": 10
+}
