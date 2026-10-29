@@ -68,11 +68,11 @@ flowchart TB
         C4["降级兜底"]
     end
 
-    subgraph L5["⑤ 数据层"]
+    subgraph L4["④ 数据层"]
         E1["users · conversations · checkins"]
     end
 
-    subgraph L4["④ 模型适配层"]
+    subgraph L5["⑤ 模型适配层"]
         direction LR
         D1["OpenAI 兼容协议"]
         D2["Anthropic API"]
@@ -96,7 +96,6 @@ flowchart TB
     class F ext
 ```
 
-> 图中 ①–④ 为本项目实现的四层结构；⑤ 数据层与主调用链并列，由接入层直接读写。实线表示主调用链与数据流，虚线表示降级路径与外部依赖。
 > 可编辑源文件见 [`docs/系统架构图.drawio`](docs/系统架构图.drawio)，用 draw.io 打开后可导出 300 dpi 的 PNG 或 SVG。
 
 四层职责：

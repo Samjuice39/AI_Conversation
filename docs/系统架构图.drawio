@@ -1,6 +1,6 @@
 <mxfile host="app.diagrams.net" agent="manual" version="24.0.0">
   <diagram id="arch-bw" name="系统架构">
-    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="900" math="0" shadow="0">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="870" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -51,7 +51,7 @@
         </mxCell>
 
         <!-- ============ ⑤ 数据层 ============ -->
-        <mxCell id="L5d" value="⑤ 数据层" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#333333;strokeWidth=2;align=center;verticalAlign=top;spacingTop=6;fontSize=15;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="L5d" value="④ 数据层" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#333333;strokeWidth=2;align=center;verticalAlign=top;spacingTop=6;fontSize=15;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="580" y="330" width="540" height="205" as="geometry" />
         </mxCell>
         <mxCell id="L5da" value="users　·　conversations　·　checkins" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#333333;strokeWidth=1.2;align=center;verticalAlign=middle;fontSize=12;" vertex="1" parent="1">
@@ -59,7 +59,7 @@
         </mxCell>
 
         <!-- ============ ④ 模型适配层 ============ -->
-        <mxCell id="L4" value="④ 模型适配层" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#333333;strokeWidth=2;align=center;verticalAlign=top;spacingTop=6;fontSize=15;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="L4" value="⑤ 模型适配层" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#333333;strokeWidth=2;align=center;verticalAlign=top;spacingTop=6;fontSize=15;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="40" y="600" width="480" height="130" as="geometry" />
         </mxCell>
         <mxCell id="L4a" value="OpenAI 兼容协议" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#333333;strokeWidth=1.2;align=center;verticalAlign=middle;fontSize=12;" vertex="1" parent="1">
@@ -119,17 +119,6 @@
         </mxCell>
         <mxCell id="T5" value="HTTPS" style="text;html=1;align=left;verticalAlign=middle;fontSize=11;fontColor=#333333;" vertex="1" parent="1">
           <mxGeometry x="290" y="742" width="70" height="20" as="geometry" />
-        </mxCell>
-
-        <!-- ============ 图例 ============ -->
-        <mxCell id="LEG1" value="说明" style="text;html=1;align=left;verticalAlign=top;fontSize=11;fontStyle=1;fontColor=#333333;" vertex="1" parent="1">
-          <mxGeometry x="580" y="600" width="540" height="20" as="geometry" />
-        </mxCell>
-        <mxCell id="LEG2" value="① 表现层至 ④ 模型适配层为本项目实现的四层结构；⑤ 数据层与主调用链并列，由接入层直接读写。" style="text;html=1;align=left;verticalAlign=top;fontSize=10.5;fontColor=#333333;whiteSpace=wrap;" vertex="1" parent="1">
-          <mxGeometry x="580" y="624" width="540" height="40" as="geometry" />
-        </mxCell>
-        <mxCell id="LEG3" value="实线表示主调用链与数据流；虚线表示降级路径与外部依赖。" style="text;html=1;align=left;verticalAlign=top;fontSize=10.5;fontColor=#333333;whiteSpace=wrap;" vertex="1" parent="1">
-          <mxGeometry x="580" y="668" width="540" height="40" as="geometry" />
         </mxCell>
 
       </root>
