@@ -43,58 +43,11 @@
 
 ## 技术架构
 
-```mermaid
-%%{init: {'theme':'neutral','themeVariables':{'lineColor':'#333333','primaryBorderColor':'#333333','fontFamily':'sans-serif'}}}%%
-flowchart TB
-    subgraph L1["① 表现层"]
-        direction LR
-        A1["登录 / 注册页"]
-        A2["主界面：对话区 · 情绪可视化 · 统计面板"]
-    end
+<img src="docs/架构图.drawio.png" alt="系统架构图" width="100%">
 
-    subgraph L2["② 接入层"]
-        direction LR
-        B1["路由控制"]
-        B2["会话鉴权"]
-        B3["参数校验"]
-        B4["数据持久化"]
-    end
+五层结构自上而下：**表现层**负责对话与可视化，**接入层**承担路由、鉴权、参数校验与持久化，**AI 分析层**完成 Prompt 构造、结构化解析、字段校验与降级兜底，**数据层**以 SQLite 保存账号、话题与情绪记录，**模型适配层**屏蔽不同服务商的接口差异。
 
-    subgraph L3["③ AI 分析层"]
-        direction LR
-        C1["Prompt 构造"]
-        C2["结构化解析"]
-        C3["字段校验 + 重试"]
-        C4["降级兜底"]
-    end
-
-    subgraph L4["④ 数据层"]
-        E1["users · conversations · checkins"]
-    end
-
-    subgraph L5["⑤ 模型适配层"]
-        direction LR
-        D1["OpenAI 兼容协议"]
-        D2["Anthropic API"]
-    end
-
-    F["外部 LLM 服务"]
-
-    L1 -->|"HTTP / JSON"| L2
-    B3 -->|"调用"| C1
-    B4 -->|"读写"| L5
-    C2 --> C3
-    C3 -.->|"校验失败"| C4
-    L3 -->|"请求"| L4
-    L4 -->|"HTTPS"| F
-
-    classDef layer fill:#F5F5F5,stroke:#333333,stroke-width:2px,color:#333333
-    classDef box fill:#FFFFFF,stroke:#333333,stroke-width:1px,color:#333333
-    classDef ext fill:none,stroke:#333333,stroke-width:1.5px,stroke-dasharray:4 3,color:#333333
-    class L1,L2,L3,L4,L5 layer
-    class A1,A2,B1,B2,B3,B4,C1,C2,C3,C4,D1,D2,E1 box
-    class F ext
-```
+实线表示主调用链与数据流，虚线表示降级路径与外部依赖。
 
 > 可编辑源文件见 [`docs/系统架构图.drawio`](docs/系统架构图.drawio)，用 draw.io 打开后可导出 300 dpi 的 PNG 或 SVG。
 
