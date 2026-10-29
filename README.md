@@ -44,14 +44,52 @@
 ## 技术架构
 
 ```mermaid
-flowchart LR
-    A[浏览器<br/>单页应用] -->|fetch JSON| B[Flask 应用<br/>app.py]
-    B --> C[AI 分析层<br/>ai_coach.py]
-    C --> D[模型客户端<br/>llm_client.py]
-    D -->|OpenAI 兼容 / Anthropic| E[(大语言模型)]
-    B --> F[(SQLite<br/>users / conversations / checkins)]
-    C -->|未配置模型时| G[关键词兜底]
+flowchart TB
+    subgraph L1["① 表现层（浏览器端 · 零第三方依赖）"]
+        A1["登录 / 注册页<br/>login.html"]
+        A2["主界面<br/>对话区 · 情绪可视化 · 统计面板"]
+    end
+
+    subgraph L2["② 接入层（Flask · app.py）"]
+        B1["路由控制"]
+        B2["会话鉴权"]
+        B3["参数校验"]
+        B4["数据持久化"]
+    end
+
+    subgraph L3["③ AI 分析层（ai_coach.py）"]
+        C1["Prompt 构造<br/>风格约束 + 字段定义"]
+        C2["结构化解析<br/>围栏剥离 + 正则提取"]
+        C3["字段校验 + 重试"]
+        C4["降级兜底<br/>关键词模式 · 标注来源"]
+    end
+
+    subgraph L4["④ 模型适配层（llm_client.py）"]
+        D1["OpenAI 兼容协议<br/>DeepSeek / 通义 / Ollama"]
+        D2["Anthropic API<br/>Claude 系列"]
+    end
+
+    subgraph L5["⑤ 数据层（SQLite）"]
+        E1[("users · conversations · checkins")]
+    end
+
+    F["外部 LLM 服务"]
+
+    A2 -->|HTTP / JSON| B1
+    B1 --> B3
+    B3 -->|调用| C1
+    C1 --> C2
+    C2 --> C3
+    C3 -.->|校验失败| C4
+    C3 -->|请求| D1
+    C3 -->|请求| D2
+    D1 -->|HTTPS| F
+    D2 -->|HTTPS| F
+    B4 -->|读写| E1
 ```
+
+> 图中 ①–④ 为本项目实现的四层结构；⑤ 数据层与主调用链并列，由接入层直接读写。虚线表示降级路径。
+> 可编辑源文件见 [`docs/系统架构图.drawio`](docs/系统架构图.drawio)，用 draw.io 打开后可导出 300 dpi 的 PNG/SVG。
 
 四层职责：
 
