@@ -2,17 +2,40 @@
 import json
 import re
 
+import rag_retriever
 from llm_client import describe, request_completion
 
 LABELS = {0: "平静", 1: "焦虑", 2: "愉悦", 3: "疲惫", 4: "低落", 5: "烦躁"}
 CRISIS_PATTERN = re.compile(r"自杀|不想活|结束生命|伤害自己|自残|轻生")
+
+# 粗判情绪码，只用于检索时给知识库加权，不参与最终输出。
+# 真正的情绪判断仍由模型给出，这里只是一个检索线索。
+_EMOTION_KEYWORDS = {
+    1: ("紧张", "焦虑", "担心", "慌", "害怕", "压力", "怕", "不安", "睡不着"),
+    5: ("烦", "生气", "火", "吵", "受不了", "怒", "暴躁", "崩溃"),
+    3: ("累", "困", "没精神", "疲惫", "睡不好", "没睡好", "睡不够",
+        "没劲", "转不动", "提不起", "没力气"),
+    4: ("难过", "失望", "委屈", "低落", "想哭", "孤独", "空虚", "麻木", "没意思"),
+    2: ("开心", "高兴", "完成", "好消息", "兴奋", "棒", "顺利", "终于"),
+}
+
+
+def _guess_emotion(text):
+    """按关键词粗判情绪码，命中最多者优先；判不出返回 None。"""
+    hits = {}
+    for code, words in _EMOTION_KEYWORDS.items():
+        n = sum(1 for w in words if w in text)
+        if n:
+            hits[code] = n
+    return max(hits, key=hits.get) if hits else None
 
 _SYSTEM_PROMPT = """你是情绪支持 Agent。结合当前消息、情境、睡眠和近期对话，理解情绪并给出支持。
 只输出一个完整合法 JSON，禁止 Markdown 和任何额外文字。字段：
 emotionCode(0平静/1焦虑/2愉悦/3疲惫/4低落/5烦躁)、intensity(1-5整数)、confidence(0-1)、summary、response、evidence(数组)、triggers(数组)、suggestion、followUpQuestion、riskLevel(low/medium/high)。
 response 像一位可信赖、有耐心的陪伴者，说自然口语，不像客服或心理咨询话术。不要机械复述，不说教，不灌鸡汤，不夸大理解，不滥用“我理解”“听起来”“这很正常”“你愿意吗”等套话，不用表情符号。
 不要固定使用“共情+建议+提问”结构。用户只是想倾诉或分享开心时，先自然接住话题；没有合适建议时 suggestion 留空，没有值得追问时 followUpQuestion 留空。确需建议时只给一个简单动作，确需了解时再问一个自然的问题。
-不诊断，不编造经历，不提及未提供的硬件数据。明确自伤或轻生风险时 riskLevel=high。"""
+不诊断，不编造经历，不提及未提供的硬件数据。明确自伤或轻生风险时 riskLevel=high。
+若输入里带「可参考的干预思路」，只在合适时自然融入其中一条的做法，不要逐条列举、不要照搬措辞、不要为了用上而硬塞；与当前处境不符就忽略。"""
 
 _STYLE_GUIDE = """表达风格：像亲近、热烈、可靠的陪伴者，坚定站在用户一边。先接住感受，多肯定用户付出的努力和已有的能力，让对方感到“有人陪我、有人相信我”。
 语气自然活泼，可适量使用“呀、啦、哒、哈、~”，偶尔用“我一直在”“辛苦了”“我相信你”。可以适度撒娇式安慰，但不要每句都卖萌。
@@ -127,6 +150,21 @@ def _fallback(text):
     return result
 
 
+def _retrieve_knowledge(text, top_k=3):
+    """检索与当前消息相关的干预策略，作为 prompt 的参考素材。
+
+    检索失败不阻断主流程——RAG 是增强项，不是必需项。
+    """
+    try:
+        items = rag_retriever.retrieve(
+            text, emotion_code=_guess_emotion(text), top_k=top_k
+        )
+        return rag_retriever.format_for_prompt(items)
+    except Exception as exc:  # noqa: BLE001 - 检索异常不应影响对话
+        print(f"[RAG] 检索失败，跳过知识增强：{exc}")
+        return []
+
+
 def analyze(context):
     text = context["text"]
     local_crisis = bool(CRISIS_PATTERN.search(text))
@@ -139,6 +177,7 @@ def analyze(context):
         "当前情境": context.get("taskContext") or "未选择",
         "昨夜睡眠质量（1差到5好）": context.get("sleepQuality") or "未提供",
         "近期对话与反馈": context.get("history") or [],
+        "可参考的干预思路": _retrieve_knowledge(text),
     }, ensure_ascii=False)
     pattern, sample_input, sample_response, sample_code = next(
         (item for item in _STYLE_EXAMPLES if re.search(item[0], text)),
