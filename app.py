@@ -1,17 +1,51 @@
 import datetime
+import json
 import os
+import re
 import sqlite3
 from contextlib import contextmanager
 
 from flask import Flask, jsonify, request, send_from_directory, session
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from ai_coach import analyze as ai_analyze, generate_insights
+import agent_workflow
+from ai_coach import (CRISIS_PATTERN, analyze as ai_analyze, generate_insights,
+                      validate_result)
 from llm_client import describe as llm_describe
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "emotion_planet.db")
 app = Flask(__name__)
+
+# Agent 工作流开关：默认开启。设 AGENT_MODE=0 可退回单轮分析，
+# 便于对比两种模式的效果，也方便在不支持工具调用的网关上降级。
+AGENT_MODE = os.environ.get("AGENT_MODE", "1") not in ("0", "false", "False")
+
+
+def run_analysis(text, context, sleep, history, user_id):
+    """Agent 负责判断该查什么并取回数据，生成仍走单轮分析。
+
+    这样拆的原因：让同一个模型「一边调工具一边写回应」时，它容易把工具返回的
+    操作步骤当成待办清单复述出来，情感回应被挤掉。分开后既有 Agent 的按需取数，
+    又保住了单轮分析里完整的风格示例。
+    """
+    payload = {"text": text, "taskContext": context,
+               "sleepQuality": sleep, "history": history}
+
+    facts, trace = [], None
+    if AGENT_MODE:
+        try:
+            info = agent_workflow.collect(payload, DB_PATH, user_id)
+            facts, trace = info.get("facts") or [], info.get("trace")
+        except Exception as exc:  # noqa: BLE001 - 取数失败就退回纯单轮
+            print(f"[Agent] 信息收集失败，按单轮处理：{exc}")
+
+    result = ai_analyze(payload, facts)
+    result["trace"] = trace
+    if facts:
+        result["source"] = "agent"
+    return result
+
 app.secret_key = os.environ.get("EMOTION_SECRET_KEY", "emotion-planet-pure-web-dev-key")
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax")
 
@@ -121,7 +155,6 @@ def unauthorized(error):
 
 
 def checkin_dict(row):
-    import json
     return {
         "id": row["id"], "conversationId": row["conversation_id"],
         "createdAt": row["created_at"], "text": row["input_text"],
@@ -312,12 +345,10 @@ def chat():
         "情绪": row["emotion"], "建议反馈": row["feedback"] or "未反馈",
     } for row in reversed(rows)]
     try:
-        result = ai_analyze({"text": text, "taskContext": context,
-                             "sleepQuality": sleep, "history": history})
+        result = run_analysis(text, context, sleep, history, user[0])
     except Exception as exc:
         print(f"[AI] 分析失败：{exc}")
         return jsonify({"ok": False, "error": f"AI 分析失败：{exc}"}), 503
-    import json
     with get_db() as conn:
         conversation = conn.execute(
             "SELECT id FROM conversations WHERE id = ? AND user_id = ?", (conversation_id, user[0])

@@ -300,6 +300,60 @@ def request_completion(system_prompt, user_prompt):
     return text, active
 
 
+def chat_completion(messages, tools=None, temperature=0.3, max_tokens=1200,
+                    json_mode=False):
+    """底层对话接口，返回完整 message 对象（含 content 与 tool_calls）。
+
+    与 request_completion 的区别：这里不做「只取 content」的裁剪，
+    因为工具调用时模型返回的是 tool_calls 而不是文本，调用方需要拿到原始结构。
+
+    仅支持 OpenAI 兼容协议；Anthropic 的工具调用协议格式不同，
+    当前不在此实现，调用方应自行降级。
+    """
+    active = _resolve(_load_config())
+    if not active:
+        raise RuntimeError("尚未配置大模型，请填写 llm_config.json")
+    if active["provider"] == "anthropic":
+        raise RuntimeError("工具调用仅支持 OpenAI 兼容接口，请切换 provider")
+
+    url = active["baseUrl"].rstrip("/") + "/chat/completions"
+    payload = {
+        "model": active["model"],
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
+
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=body, method="POST", headers={
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {active['apiKey']}",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=active["timeout"]) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:
+            detail = e.read().decode("utf-8", "ignore")[:200]
+        except Exception:
+            pass
+        raise RuntimeError(f"接口返回 {e.code} {detail}".strip())
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"网络不通: {e.reason}")
+
+    try:
+        message = data["choices"][0]["message"]
+    except (KeyError, IndexError, TypeError):
+        raise RuntimeError("返回格式不符合预期")
+    return message, active
+
+
 # 陪护话术入口
 def generate_comfort(context):
     active = _resolve(_load_config())

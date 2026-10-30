@@ -35,7 +35,8 @@ emotionCode(0平静/1焦虑/2愉悦/3疲惫/4低落/5烦躁)、intensity(1-5整�
 response 像一位可信赖、有耐心的陪伴者，说自然口语，不像客服或心理咨询话术。不要机械复述，不说教，不灌鸡汤，不夸大理解，不滥用“我理解”“听起来”“这很正常”“你愿意吗”等套话，不用表情符号。
 不要固定使用“共情+建议+提问”结构。用户只是想倾诉或分享开心时，先自然接住话题；没有合适建议时 suggestion 留空，没有值得追问时 followUpQuestion 留空。确需建议时只给一个简单动作，确需了解时再问一个自然的问题。
 不诊断，不编造经历，不提及未提供的硬件数据。明确自伤或轻生风险时 riskLevel=high。
-若输入里带「可参考的干预思路」，只在合适时自然融入其中一条的做法，不要逐条列举、不要照搬措辞、不要为了用上而硬塞；与当前处境不符就忽略。"""
+若输入里带「可参考的干预思路」，只在合适时自然融入其中一条的做法，不要逐条列举、不要照搬措辞、不要为了用上而硬塞；与当前处境不符就忽略。
+若输入里带「已知事实」，那是工具查到的真实记录。可以引用其中的具体时间、情绪或触发因素来支撑你的判断，但不要罗列成清单，也不要把它当成必须提起的内容。"""
 
 _STYLE_GUIDE = """表达风格：像亲近、热烈、可靠的陪伴者，坚定站在用户一边。先接住感受，多肯定用户付出的努力和已有的能力，让对方感到“有人陪我、有人相信我”。
 语气自然活泼，可适量使用“呀、啦、哒、哈、~”，偶尔用“我一直在”“辛苦了”“我相信你”。可以适度撒娇式安慰，但不要每句都卖萌。
@@ -150,6 +151,15 @@ def _fallback(text):
     return result
 
 
+def validate_result(value, local_crisis=False):
+    """对外暴露的结果校验入口。
+
+    Agent 工作流拿到的是模型原始 JSON，需要走同一套字段校验，
+    避免两条路径产出结构不一致的结果。
+    """
+    return _validate(value, local_crisis)
+
+
 def _retrieve_knowledge(text, top_k=3):
     """检索与当前消息相关的干预策略，作为 prompt 的参考素材。
 
@@ -165,20 +175,25 @@ def _retrieve_knowledge(text, top_k=3):
         return []
 
 
-def analyze(context):
+def analyze(context, facts=None):
     text = context["text"]
     local_crisis = bool(CRISIS_PATTERN.search(text))
     if not describe().get("enabled"):
         result = _fallback(text)
         result.update({"source": "fallback", "model": None})
         return result
-    user_prompt = json.dumps({
+    payload = {
         "当前消息": text,
         "当前情境": context.get("taskContext") or "未选择",
         "昨夜睡眠质量（1差到5好）": context.get("sleepQuality") or "未提供",
         "近期对话与反馈": context.get("history") or [],
         "可参考的干预思路": _retrieve_knowledge(text),
-    }, ensure_ascii=False)
+    }
+    # facts 来自 Agent 工作流的工具调用结果（历史记录、统计等）。
+    # 只在确实查到内容时加入，避免给模型一个空的「已知事实」造成干扰。
+    if facts:
+        payload["已知事实"] = facts
+    user_prompt = json.dumps(payload, ensure_ascii=False)
     pattern, sample_input, sample_response, sample_code = next(
         (item for item in _STYLE_EXAMPLES if re.search(item[0], text)),
         _STYLE_EXAMPLES[-1],
