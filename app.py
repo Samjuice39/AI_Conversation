@@ -12,6 +12,7 @@ import agent_workflow
 from ai_coach import (CRISIS_PATTERN, analyze as ai_analyze, generate_insights,
                       validate_result)
 from llm_client import describe as llm_describe
+from user_profile import build_profile, format_for_prompt
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "emotion_planet.db")
@@ -31,6 +32,10 @@ def run_analysis(text, context, sleep, history, user_id, persona="gentle"):
     """
     payload = {"text": text, "taskContext": context, "persona": persona,
                "sleepQuality": sleep, "history": history}
+    profile = build_profile(DB_PATH, user_id)
+    profile_hint = format_for_prompt(profile)
+    if profile_hint:
+        payload["userProfile"] = profile_hint
 
     facts, trace = [], None
     if AGENT_MODE:
@@ -42,6 +47,7 @@ def run_analysis(text, context, sleep, history, user_id, persona="gentle"):
 
     result = ai_analyze(payload, facts)
     result["trace"] = trace
+    result["personalization"] = profile
     if facts:
         result["source"] = "agent"
     return result
@@ -110,6 +116,8 @@ def init_db():
         columns = {row[1] for row in conn.execute("PRAGMA table_info(checkins)")}
         if "conversation_id" not in columns:
             conn.execute("ALTER TABLE checkins ADD COLUMN conversation_id INTEGER")
+        if "persona" not in columns:
+            conn.execute("ALTER TABLE checkins ADD COLUMN persona TEXT")
         # 老版本数据归入每个用户自己的“往期对话”，不跨账号串话题。
         users = conn.execute("SELECT DISTINCT user_id FROM checkins").fetchall()
         for (uid,) in users:
@@ -164,6 +172,7 @@ def checkin_dict(row):
         "intensity": row["intensity"], "confidence": row["confidence"],
         "summary": row["summary"], "response": row["response"],
         "suggestion": row["suggestion"], "followUpQuestion": row["follow_up"],
+        "persona": row["persona"],
         "triggers": json.loads(row["triggers_json"] or "[]"),
         "riskLevel": row["risk_level"], "source": row["source"], "model": row["model"],
         "feedback": row["feedback"], "feedbackAt": row["feedback_at"],
@@ -363,12 +372,13 @@ def chat():
             INSERT INTO checkins (
                 user_id, conversation_id, created_at, input_text, context, sleep_quality, emotion,
                 emotion_code, intensity, confidence, summary, response, suggestion,
-                follow_up, triggers_json, risk_level, source, model
-            ) VALUES (?, ?, datetime('now','localtime'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                follow_up, triggers_json, risk_level, source, model, persona
+            ) VALUES (?, ?, datetime('now','localtime'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (user[0], conversation_id, text, context, sleep, result["emotion"], result["emotionCode"],
               result["intensity"], result["confidence"], result["summary"], result["response"],
               result["suggestion"], result["followUpQuestion"], json.dumps(result["triggers"], ensure_ascii=False),
-              result["riskLevel"], result["source"], result.get("model")))
+              result["riskLevel"], result["source"], result.get("model"),
+              result.get("persona") or persona))
         checkin_id = cursor.lastrowid
         conn.execute(
             "UPDATE conversations SET title = CASE WHEN title = '新话题' THEN ? ELSE title END, "
@@ -376,7 +386,9 @@ def chat():
             (text.replace("\n", " ")[:20], conversation_id),
         )
         row = conn.execute("SELECT * FROM checkins WHERE id = ?", (checkin_id,)).fetchone()
-    return jsonify({"ok": True, "result": checkin_dict(row)})
+    result_payload = checkin_dict(row)
+    result_payload["personalization"] = result.get("personalization")
+    return jsonify({"ok": True, "result": result_payload})
 
 
 @app.route("/api/checkins/<int:checkin_id>/feedback", methods=["POST"])

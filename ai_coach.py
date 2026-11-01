@@ -36,6 +36,7 @@ response 要自然口语，不像客服或心理咨询话术。不要机械复�
 不诊断，不编造经历，不提及未提供的硬件数据。睡眠质量评分只是一个数字，不要把它改写成具体经历；用户没有明确说“没睡好”时，不要断言昨晚睡得怎样。明确自伤或轻生风险时 riskLevel=high。
 若输入里带「可参考的干预思路」，只在当前人设允许给做法时自然融入其中一条，不要逐条列举、不要照搬措辞、不要为了用上而硬塞；与当前处境不符就忽略。
 若输入里带「已知事实」，那是工具查到的真实记录。可以引用其中的具体时间、情绪或触发因素来支撑你的判断，但不要罗列成清单，也不要把它当成必须提起的内容。
+若输入里带「用户偏好」，那是用户历史反馈形成的表达偏好，只用于调整语气、长度、建议密度和追问方式。不要向用户提及画像、统计或“我在学习你”，不要据此诊断，也不要为了迎合而编造或过度承诺；当前人设和安全规则优先。
 历史对话中的表达风格只是上下文，当前人设的要求优先。"""
 
 _GENTLE_SYSTEM = """当前人设是温柔陪伴型：像坐在旁边的人，自然、温和，站在对方一边。先接住具体处境，不急着评价，也不急着解决。
@@ -298,6 +299,9 @@ def analyze(context, facts=None):
     # 只在确实查到内容时加入，避免给模型一个空的「已知事实」造成干扰。
     if facts:
         payload["已知事实"] = facts
+    # 偏好是统计结果，只在样本足够时加入；没有反馈时不打扰模型。
+    if context.get("userProfile"):
+        payload["用户偏好"] = context["userProfile"]
     user_prompt = json.dumps(payload, ensure_ascii=False)
     pattern, sample_input, sample_response, sample_code, sample_suggestion, sample_followup = next(
         (item for item in spec["examples"] if re.search(item[0], text)),
