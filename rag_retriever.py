@@ -1,22 +1,5 @@
 # coding: utf-8
-"""情绪干预策略检索（RAG 的 Retrieval 部分）。
-
-设计取舍
---------
-1. 零第三方依赖：只用标准库。评委 `pip install -r requirements.txt` 后即可运行，
-   不需要下载嵌入模型（sentence-transformers 会连带 torch，2 GB 起步）。
-2. 中文检索用「字符 bigram + 单字」做 BM25F：
-   - 中文没有天然空格，按词切分需要 jieba 之类的分词器，又是一个依赖；
-   - 字符 bigram 在短文本上召回效果接近分词，且不需要词典；
-   - 单字一并入索引，避免 bigram 漏掉单字关键词。
-3. 字段加权（BM25F）：标题和「适用情境」权重高于正文。
-   实测过不加权的纯 BM25：查询「旁边一直有人说话特别烦」会召回「给一个人发条消息」，
-   因为两者共享「有人说话」这个字面片段。加权后情境词（烦躁/被打扰）才压得住。
-4. 知识库规模在几十条量级，BM25F 的排序质量足够；向量检索在这个量级上
-   的优势不明显，反而引入部署成本。
-5. 检索结果只作为「参考素材」注入 prompt，不直接展示给用户——
-   保持对话风格由 _STYLE_GUIDE 控制，不被知识库文案污染。
-"""
+"""干预策略检索：BM25F + 字符 bigram，纯标准库。"""
 
 import json
 import math
@@ -25,11 +8,11 @@ from pathlib import Path
 
 KB_PATH = Path(__file__).resolve().parent / "knowledge" / "interventions.json"
 
-# BM25 参数：k1 控制词频饱和，b 控制文档长度归一化
+# BM25 参数
 K1 = 1.5
 B = 0.75
 
-# 字段权重：标题与适用情境更能代表「这条策略是干什么的」
+# 字段权重
 FIELD_WEIGHTS = (
     ("title", 3.0),
     ("scenario", 2.5),
@@ -39,9 +22,7 @@ FIELD_WEIGHTS = (
 
 _cache = {"docs": None, "idf": None, "avgdl": None, "postings": None, "lengths": None}
 
-# 情绪码 → 该情绪的典型说法，用于查询扩展。
-# 用户原话未必带情绪词（「旁边一直有人说话特别烦」只出现一个「烦」），
-# 补上同义说法才能命中知识库里 scenario 字段的情绪词。
+# 情绪码查询扩展
 EMOTION_HINTS = {
     0: "平静 说不清 还好 一般",
     1: "焦虑 紧张 担心 慌 害怕",
@@ -137,7 +118,7 @@ def retrieve(query, emotion_code=None, top_k=3, min_score=3.0):
     if not tokens:
         return []
 
-    # 查询扩展：用情绪码补上同义说法，缓解「字面重合但情绪不同」的误召回
+    # 查询扩展
     if emotion_code is not None and emotion_code in EMOTION_HINTS:
         tokens = tokens + _tokenize(EMOTION_HINTS[emotion_code])
 
@@ -156,7 +137,7 @@ def retrieve(query, emotion_code=None, top_k=3, min_score=3.0):
             denom = tf + K1 * (1 - B + B * dl / avgdl)
             scores[idx] = scores.get(idx, 0) + w * tf * (K1 + 1) / denom
 
-    # 情绪码匹配加权：已知情绪时，同情绪的策略优先，异情绪降权但不硬性剔除
+    # 同情绪加权
     if emotion_code is not None:
         for idx, item in enumerate(docs):
             if idx not in scores:

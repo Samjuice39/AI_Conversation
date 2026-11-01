@@ -12,25 +12,38 @@ import agent_workflow
 from ai_coach import (CRISIS_PATTERN, analyze as ai_analyze, generate_insights,
                       validate_result)
 from llm_client import describe as llm_describe
-from user_profile import build_profile, format_for_prompt
+from user_profile import (build_profile, clean_preferred_name, format_for_prompt,
+                          infer_nickname)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "emotion_planet.db")
 app = Flask(__name__)
 
-# Agent 工作流开关：默认开启。设 AGENT_MODE=0 可退回单轮分析，
-# 便于对比两种模式的效果，也方便在不支持工具调用的网关上降级。
+
+def _load_env_file(path):
+    """读取 .env；已存在的环境变量优先。"""
+    if not os.path.exists(path):
+        return
+    with open(path, "r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+_load_env_file(os.path.join(BASE_DIR, ".env"))
+
+# Agent 工作流开关；设为 0 时退回单轮分析。
 AGENT_MODE = os.environ.get("AGENT_MODE", "1") not in ("0", "false", "False")
 
 
-def run_analysis(text, context, sleep, history, user_id, persona="gentle"):
-    """Agent 负责判断该查什么并取回数据，生成仍走单轮分析。
-
-    这样拆的原因：让同一个模型「一边调工具一边写回应」时，它容易把工具返回的
-    操作步骤当成待办清单复述出来，情感回应被挤掉。分开后既有 Agent 的按需取数，
-    又保住了单轮分析里完整的风格示例。
-    """
+def run_analysis(text, context, sleep, history, user_id, persona="gentle",
+                 custom_persona="", preferred_name=""):
+    """先取数，再生成；取数失败退回单轮。"""
     payload = {"text": text, "taskContext": context, "persona": persona,
+               "customPersona": custom_persona, "preferredName": preferred_name,
                "sleepQuality": sleep, "history": history}
     profile = build_profile(DB_PATH, user_id)
     profile_hint = format_for_prompt(profile)
@@ -56,7 +69,7 @@ app.secret_key = os.environ.get("EMOTION_SECRET_KEY", "emotion-planet-pure-web-d
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax")
 
 CONTEXTS = {"study", "family", "peers", "sensory", "daily", "other"}
-PERSONAS = {"gentle", "cool"}
+PERSONAS = {"gentle", "cool", "custom"}
 
 
 @contextmanager
@@ -77,6 +90,7 @@ def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
+                preferred_name TEXT,
                 created_at TEXT NOT NULL
             )
         """)
@@ -118,6 +132,9 @@ def init_db():
             conn.execute("ALTER TABLE checkins ADD COLUMN conversation_id INTEGER")
         if "persona" not in columns:
             conn.execute("ALTER TABLE checkins ADD COLUMN persona TEXT")
+        user_columns = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+        if "preferred_name" not in user_columns:
+            conn.execute("ALTER TABLE users ADD COLUMN preferred_name TEXT")
         # 老版本数据归入每个用户自己的“往期对话”，不跨账号串话题。
         users = conn.execute("SELECT DISTINCT user_id FROM checkins").fetchall()
         for (uid,) in users:
@@ -241,7 +258,13 @@ def delete_account():
 @app.route("/api/auth/me")
 def me():
     user = current_user()
-    return jsonify({"ok": True, "username": user[1] if user else None})
+    preferred_name = ""
+    if user:
+        with get_db() as conn:
+            row = conn.execute("SELECT preferred_name FROM users WHERE id = ?", (user[0],)).fetchone()
+            preferred_name = row["preferred_name"] if row and row["preferred_name"] else ""
+    return jsonify({"ok": True, "username": user[1] if user else None,
+                    "preferredName": preferred_name})
 
 
 @app.route("/api/ai/status")
@@ -314,6 +337,8 @@ def chat():
     text = str(body.get("text") or "").strip()
     context = str(body.get("context") or "daily")
     persona = str(body.get("persona") or "gentle")
+    custom_persona = re.sub(r"\s+", " ", str(body.get("customPersona") or "")).strip()[:120]
+    preferred_name = clean_preferred_name(body.get("preferredName"))
     sleep = body.get("sleepQuality")
     if not 2 <= len(text) <= 1000:
         return jsonify({"ok": False, "error": "请输入 2～1000 字"}), 400
@@ -325,6 +350,18 @@ def chat():
         return jsonify({"ok": False, "error": "睡眠质量应为 1～5"}), 400
     sleep = int(sleep) if sleep not in (None, "") else None
     with get_db() as conn:
+        user_row = conn.execute("SELECT preferred_name FROM users WHERE id = ?", (user[0],)).fetchone()
+        stored_name = user_row["preferred_name"] if user_row and user_row["preferred_name"] else ""
+        if preferred_name:
+            if preferred_name != stored_name:
+                conn.execute("UPDATE users SET preferred_name = ? WHERE id = ?", (preferred_name, user[0]))
+        elif not stored_name:
+            inferred_name = infer_nickname(text)
+            if inferred_name:
+                preferred_name = inferred_name
+                conn.execute("UPDATE users SET preferred_name = ? WHERE id = ?", (inferred_name, user[0]))
+        else:
+            preferred_name = stored_name
         raw_conversation_id = body.get("conversationId")
         if raw_conversation_id not in (None, ""):
             try:
@@ -358,7 +395,8 @@ def chat():
         "情绪": row["emotion"], "建议反馈": row["feedback"] or "未反馈",
     } for row in reversed(rows)]
     try:
-        result = run_analysis(text, context, sleep, history, user[0], persona)
+        result = run_analysis(text, context, sleep, history, user[0], persona,
+                              custom_persona, preferred_name)
     except Exception as exc:
         print(f"[AI] 分析失败：{exc}")
         return jsonify({"ok": False, "error": f"AI 分析失败：{exc}"}), 503

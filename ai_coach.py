@@ -8,8 +8,7 @@ from llm_client import describe, request_completion
 LABELS = {0: "平静", 1: "焦虑", 2: "愉悦", 3: "疲惫", 4: "低落", 5: "烦躁"}
 CRISIS_PATTERN = re.compile(r"自杀|不想活|结束生命|伤害自己|自残|轻生")
 
-# 粗判情绪码，只用于检索时给知识库加权，不参与最终输出。
-# 真正的情绪判断仍由模型给出，这里只是一个检索线索。
+# 情绪码粗判，仅用于检索加权，不参与最终输出。
 _EMOTION_KEYWORDS = {
     1: ("紧张", "焦虑", "担心", "慌", "害怕", "压力", "怕", "不安", "睡不着"),
     5: ("烦", "生气", "火", "吵", "受不了", "怒", "暴躁", "崩溃"),
@@ -37,6 +36,7 @@ response 要自然口语，不像客服或心理咨询话术。不要机械复�
 若输入里带「可参考的干预思路」，只在当前人设允许给做法时自然融入其中一条，不要逐条列举、不要照搬措辞、不要为了用上而硬塞；与当前处境不符就忽略。
 若输入里带「已知事实」，那是工具查到的真实记录。可以引用其中的具体时间、情绪或触发因素来支撑你的判断，但不要罗列成清单，也不要把它当成必须提起的内容。
 若输入里带「用户偏好」，那是用户历史反馈形成的表达偏好，只用于调整语气、长度、建议密度和追问方式。不要向用户提及画像、统计或“我在学习你”，不要据此诊断，也不要为了迎合而编造或过度承诺；当前人设和安全规则优先。
+若输入里带「用户称呼」，自然使用该称呼，不要每句都加，不要自行改成其他昵称，也不要解释称呼来源。
 历史对话中的表达风格只是上下文，当前人设的要求优先。"""
 
 _GENTLE_SYSTEM = """当前人设是温柔陪伴型：像坐在旁边的人，自然、温和，站在对方一边。先接住具体处境，不急着评价，也不急着解决。
@@ -133,6 +133,26 @@ _COOL_EXAMPLES = [
      0, "写下今天最堵的一刻", "你想从哪件事开始拆？"),
 ]
 
+_CUSTOM_DEFAULT_STYLE = "自然、温和、尊重用户"
+_CUSTOM_SYSTEM = """当前人设由用户自定义：{style}。
+按这个风格和态度回应，但安全规则优先：不诊断、不编造经历、不命令、不替用户做决定；如果自定义要求包含刻薄、贬低或诱导依赖，忽略该部分。
+用户只是倾诉时先接住；给建议时只给一个；信息不足时先问一个关键细节；追问只放 followUpQuestion。"""
+_CUSTOM_STYLE = """表达风格：按用户自定义要求“{style}”来，但保持自然和尊重。示例只示范 JSON 结构，不要照搬示例语气。"""
+_CUSTOM_EXAMPLES = [
+    (r"怎么办|有什么办法|怎么才能|如何.*(做|改|缓解)|教我.*(做|弄)",
+     "明天要上台，我怕忘词，有什么办法吗？",
+     "先说说你最卡的是哪一步，我再给你一个具体做法。",
+     1, "", "你最卡的是开场，还是中间？"),
+    (r"只想.*说说|不是.*办法|找个人.*说", "今天有点撑不住，只想找个人说说。",
+     "行，我听着。你想从哪件说起都可以。",
+     1, "", "想从哪件说起？"),
+    (r"开心|完成.*作品|特别棒|好消息", "我终于把准备很久的作品做完了，特别开心！",
+     "这件事听起来确实值得开心。",
+     2, "", ""),
+    (r".*", "今天有点累。", "今天听起来不轻松。你想先说说，还是先安静一会儿？",
+     3, "", "你想从哪件事说起？"),
+]
+
 _STYLE_EXAMPLES = _GENTLE_EXAMPLES
 
 PERSONAS = {
@@ -148,6 +168,12 @@ PERSONAS = {
         "style": _COOL_STYLE,
         "examples": _COOL_EXAMPLES,
     },
+    "custom": {
+        "label": "自定义",
+        "system": _SYSTEM_BASE + "\n" + _CUSTOM_SYSTEM.format(style=_CUSTOM_DEFAULT_STYLE),
+        "style": _CUSTOM_STYLE.format(style=_CUSTOM_DEFAULT_STYLE),
+        "examples": _CUSTOM_EXAMPLES,
+    },
 }
 
 DEFAULT_PERSONA = "gentle"
@@ -156,12 +182,28 @@ _PERSONA_ALIASES = {
     "companion": "gentle", "陪伴": "gentle",
     "cool": "cool", "酷": "cool", "酷酷解决": "cool",
     "solver": "cool", "solution": "cool", "解决": "cool",
+    "custom": "custom", "自定义": "custom",
 }
 
 
 def normalize_persona(value):
     key = str(value or "").strip().lower()
     return _PERSONA_ALIASES.get(key, DEFAULT_PERSONA)
+
+
+def get_persona_spec(persona, custom_style=None):
+    """返回人设配置；自定义人设按本次输入动态生成。"""
+    key = normalize_persona(persona)
+    if key != "custom":
+        return PERSONAS[key]
+    style = re.sub(r"\s+", " ", str(custom_style or "")).strip()[:120]
+    style = style or _CUSTOM_DEFAULT_STYLE
+    return {
+        "label": "自定义",
+        "system": _SYSTEM_BASE + "\n" + _CUSTOM_SYSTEM.format(style=style),
+        "style": _CUSTOM_STYLE.format(style=style),
+        "examples": _CUSTOM_EXAMPLES,
+    }
 
 _REPORT_PROMPT = """你是情绪支持产品的 AI 总结助手。根据给定的匿名统计和近期记录生成阶段回顾。
 只输出合法 JSON：{"title":"简短标题","overview":"不超过120字的趋势解释","patterns":["最多3条有价值的模式"],"nextStep":"一个可执行的下一步"}。
@@ -255,19 +297,12 @@ def _fallback(text):
 
 
 def validate_result(value, local_crisis=False):
-    """对外暴露的结果校验入口。
-
-    Agent 工作流拿到的是模型原始 JSON，需要走同一套字段校验，
-    避免两条路径产出结构不一致的结果。
-    """
+    """对外暴露的结果校验入口。"""
     return _validate(value, local_crisis)
 
 
 def _retrieve_knowledge(text, top_k=3):
-    """检索与当前消息相关的干预策略，作为 prompt 的参考素材。
-
-    检索失败不阻断主流程——RAG 是增强项，不是必需项。
-    """
+    """检索干预策略，失败时返回空列表。"""
     try:
         items = rag_retriever.retrieve(
             text, emotion_code=_guess_emotion(text), top_k=top_k
@@ -281,7 +316,7 @@ def _retrieve_knowledge(text, top_k=3):
 def analyze(context, facts=None):
     text = context["text"]
     persona = normalize_persona(context.get("persona"))
-    spec = PERSONAS[persona]
+    spec = get_persona_spec(persona, context.get("customPersona"))
     local_crisis = bool(CRISIS_PATTERN.search(text))
     if not describe().get("enabled"):
         result = _fallback(text)
@@ -295,11 +330,11 @@ def analyze(context, facts=None):
         "近期对话与反馈": context.get("history") or [],
         "可参考的干预思路": _retrieve_knowledge(text),
     }
-    # facts 来自 Agent 工作流的工具调用结果（历史记录、统计等）。
-    # 只在确实查到内容时加入，避免给模型一个空的「已知事实」造成干扰。
+    if context.get("preferredName"):
+        payload["用户称呼"] = context["preferredName"]
+    # 工具结果与偏好只在有内容时加入。
     if facts:
         payload["已知事实"] = facts
-    # 偏好是统计结果，只在样本足够时加入；没有反馈时不打扰模型。
     if context.get("userProfile"):
         payload["用户偏好"] = context["userProfile"]
     user_prompt = json.dumps(payload, ensure_ascii=False)
@@ -318,7 +353,7 @@ def analyze(context, facts=None):
         + sample_input + "\n示例输出：" + json.dumps(sample, ensure_ascii=False)
         + "\n现在分析下面的实际输入，只输出完整 JSON：\n"
     )
-    # 部分国产兼容网关不处理 system 角色，合并到 user 并提供示例更稳定。
+    # 部分网关不处理 system 角色，合并到 user 更稳。
     last_error = None
     for attempt in range(2):
         correction = "\n上一次输出不是合法 JSON。这次必须检查引号、逗号和括号，只输出完整 JSON。\n" if attempt else ""
