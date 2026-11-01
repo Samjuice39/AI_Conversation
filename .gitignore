@@ -24,6 +24,7 @@ __pycache__/
 *.py[cod]
 *.db
 *.log
+/output/
 
 # 密钥 / 本地私有配置
 llm_config.json
