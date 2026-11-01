@@ -22,14 +22,14 @@ app = Flask(__name__)
 AGENT_MODE = os.environ.get("AGENT_MODE", "1") not in ("0", "false", "False")
 
 
-def run_analysis(text, context, sleep, history, user_id):
+def run_analysis(text, context, sleep, history, user_id, persona="gentle"):
     """Agent 负责判断该查什么并取回数据，生成仍走单轮分析。
 
     这样拆的原因：让同一个模型「一边调工具一边写回应」时，它容易把工具返回的
     操作步骤当成待办清单复述出来，情感回应被挤掉。分开后既有 Agent 的按需取数，
     又保住了单轮分析里完整的风格示例。
     """
-    payload = {"text": text, "taskContext": context,
+    payload = {"text": text, "taskContext": context, "persona": persona,
                "sleepQuality": sleep, "history": history}
 
     facts, trace = [], None
@@ -50,6 +50,7 @@ app.secret_key = os.environ.get("EMOTION_SECRET_KEY", "emotion-planet-pure-web-d
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax")
 
 CONTEXTS = {"study", "family", "peers", "sensory", "daily", "other"}
+PERSONAS = {"gentle", "cool"}
 
 
 @contextmanager
@@ -303,11 +304,14 @@ def chat():
     body = request.get_json(silent=True) or {}
     text = str(body.get("text") or "").strip()
     context = str(body.get("context") or "daily")
+    persona = str(body.get("persona") or "gentle")
     sleep = body.get("sleepQuality")
     if not 2 <= len(text) <= 1000:
         return jsonify({"ok": False, "error": "请输入 2～1000 字"}), 400
     if context not in CONTEXTS:
         return jsonify({"ok": False, "error": "未知情境"}), 400
+    if persona not in PERSONAS:
+        return jsonify({"ok": False, "error": "未知人设"}), 400
     if sleep not in (None, "", 1, 2, 3, 4, 5):
         return jsonify({"ok": False, "error": "睡眠质量应为 1～5"}), 400
     sleep = int(sleep) if sleep not in (None, "") else None
@@ -345,7 +349,7 @@ def chat():
         "情绪": row["emotion"], "建议反馈": row["feedback"] or "未反馈",
     } for row in reversed(rows)]
     try:
-        result = run_analysis(text, context, sleep, history, user[0])
+        result = run_analysis(text, context, sleep, history, user[0], persona)
     except Exception as exc:
         print(f"[AI] 分析失败：{exc}")
         return jsonify({"ok": False, "error": f"AI 分析失败：{exc}"}), 503
