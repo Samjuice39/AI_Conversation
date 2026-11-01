@@ -29,6 +29,7 @@ __pycache__/
 llm_config.json
 .env
 .env.*
+!.env.example
 
 # ================= IDE / 系统 / 备份 =================
 .idea/

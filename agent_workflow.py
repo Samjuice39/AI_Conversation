@@ -1,17 +1,5 @@
 # coding: utf-8
-"""多步 Agent 工作流：判断 → 工具调用 → 生成 → 校验。
-
-与 ai_coach.analyze 的区别
---------------------------
-analyze 是单轮调用：一次请求直接产出结果，模型只能看到调用方塞进去的上下文。
-
-本模块把「要不要查历史、要不要统计、要不要检索策略」的决定权交给模型：
-先带 tools 请求，模型返回 tool_calls 就执行并把结果喂回去，直到它认为信息够了，
-再要求它按固定字段输出 JSON。
-
-这样做的代价是可能多花 1-3 次模型调用；收益是模型能按需取数，
-而不是每次都把全部历史塞进 prompt（既费 token 又稀释重点）。
-"""
+"""Agent 取数：判断是否需要查询，执行工具并返回结果。"""
 
 import json
 import re
@@ -22,9 +10,7 @@ import rag_retriever
 from ai_coach import _STYLE_EXAMPLES, _STYLE_GUIDE, _SYSTEM_PROMPT
 from llm_client import chat_completion
 
-# ---------------------------------------------------------------------------
-# 工具定义：交给模型的 schema
-# ---------------------------------------------------------------------------
+# 工具定义
 TOOLS = [
     {
         "type": "function",
@@ -86,8 +72,7 @@ TOOLS = [
 
 LABELS = {0: "平静", 1: "焦虑", 2: "愉悦", 3: "疲惫", 4: "低落", 5: "烦躁"}
 
-# 模型偶尔会把键名写成中文。收尾指令已明确要求英文键名，
-# 这里再做一层兜底映射，避免整个结果因为键名不对而作废。
+# 中文键名兜底。
 _CN_KEYS = {
     "情绪": "emotionCode", "情绪码": "emotionCode", "情绪类别": "emotionCode",
     "强度": "intensity", "置信度": "confidence", "可信度": "confidence",
@@ -101,8 +86,7 @@ _CN_KEYS = {
 }
 
 
-# 模型偶尔会把情绪码写成英文单词或中文。这里统一映射回 0-5 的数字，
-# 因为下游 _validate 严格要求整数。
+# 情绪码别名，统一转成 0-5。
 _EMOTION_ALIAS = {
     "calm": 0, "neutral": 0, "平静": 0,
     "anxiety": 1, "anxious": 1, "nervous": 1, "焦虑": 1, "紧张": 1,
@@ -114,10 +98,7 @@ _EMOTION_ALIAS = {
 
 
 def _normalize(raw):
-    """剥离 markdown 围栏、把中文键名映射为英文键名、修正情绪码类型。
-
-    返回可直接 json.loads 的字符串；解析不了就原样返回，交由调用方处理。
-    """
+    """清理围栏、映射键名并修正字段类型。"""
     text = (raw or "").strip()
     match = re.search(r"\{.*\}", text, re.S)
     if match:
@@ -131,7 +112,7 @@ def _normalize(raw):
 
     fixed = {_CN_KEYS.get(k, k): v for k, v in data.items()}
 
-    # emotionCode 必须是 0-5 的整数
+    # 情绪码 0-5
     code = fixed.get("emotionCode")
     if isinstance(code, str):
         key = code.strip().lower()
@@ -141,14 +122,14 @@ def _normalize(raw):
     else:
         fixed["emotionCode"] = 0
 
-    # intensity 必须是 1-5 的整数
+    # 强度 1-5
     try:
         intensity = int(float(fixed.get("intensity", 3)))
     except (TypeError, ValueError):
         intensity = 3
     fixed["intensity"] = max(1, min(5, intensity))
 
-    # confidence 必须是 0-1；模型可能写成 8（十分制）或 85（百分数）
+    # 置信度 0-1，兼容十分制与百分数
     try:
         confidence = float(fixed.get("confidence", 0.7))
     except (TypeError, ValueError):
@@ -162,16 +143,14 @@ def _normalize(raw):
             confidence = 0.7
     fixed["confidence"] = round(max(0.0, min(1.0, confidence)), 2)
 
-    # riskLevel 只允许三个值
+    # 风险等级
     risk = str(fixed.get("riskLevel", "low")).strip().lower()
     fixed["riskLevel"] = risk if risk in ("low", "medium", "high") else "low"
 
     return json.dumps(fixed, ensure_ascii=False)
 
 
-# ---------------------------------------------------------------------------
 # 工具实现
-# ---------------------------------------------------------------------------
 def _connect(db_path):
     conn = sqlite3.connect(db_path, timeout=5)
     conn.row_factory = sqlite3.Row
@@ -263,11 +242,7 @@ def _get_emotion_summary(db_path, user_id, days=7):
 
 
 def _search_interventions(query, emotion_code=None):
-    """检索干预策略，返回精简结果。
-
-    附带一条使用提示：工具结果是素材，不是可直接复述的台词。
-    实测不加这句时，模型会把 content 原样当清单列出来。
-    """
+    """检索干预策略，返回精简结果。"""
     items = rag_retriever.retrieve(query, emotion_code=emotion_code, top_k=3)
     return {
         "检索词": query,
@@ -290,9 +265,7 @@ _DISPATCH = {
 }
 
 
-# ---------------------------------------------------------------------------
 # 工作流主体
-# ---------------------------------------------------------------------------
 _AGENT_SYSTEM = """你可以调用工具获取信息后再回应，工具不是必须用的。
 
 判断顺序：
@@ -325,16 +298,7 @@ _COLLECT_SYSTEM = """你要判断：为了恰当地回应这个人，需不需�
 
 
 def collect(context, db_path, user_id, max_steps=2):
-    """只做信息收集，不生成回应。
-
-    为什么拆开：实测让同一个模型「一边调工具一边写回应」，它会把工具返回的
-    操作步骤当成待办清单复述出来，情感回应被挤掉。所以这里只负责
-    「判断该查什么 → 查回来」，生成交给 ai_coach.analyze（那里有完整的风格示例）。
-
-    返回
-    ----
-    {"facts": [{"tool": 名称, "result": 结果}], "trace": [...], "model": 模型名}
-    """
+    """只收集工具结果，不生成用户可见文字。"""
     messages = [
         {"role": "system", "content": _COLLECT_SYSTEM},
         {
@@ -388,21 +352,7 @@ def collect(context, db_path, user_id, max_steps=2):
 
 
 def run(context, db_path, user_id, max_steps=3):
-    """执行多步工作流。
-
-    参数
-    ----
-    context : 含 text / taskContext / sleepQuality / history
-    db_path : SQLite 路径
-    user_id : 当前用户 id
-    max_steps : 工具调用轮数上限，防止模型反复调工具不收敛
-
-    返回
-    ----
-    (message_dict, trace)
-    message_dict 是模型的原始 message（content 为 JSON 字符串）
-    trace 是执行轨迹，可用于前端展示「AI 做了什么」或服务端日志
-    """
+    """执行完整的工具调用流程，返回原始 message 与轨迹。"""
     messages = [
         {"role": "system", "content": _AGENT_SYSTEM},
         {
@@ -424,9 +374,7 @@ def run(context, db_path, user_id, max_steps=3):
 
         calls = message.get("tool_calls") or []
         if not calls:
-            # 模型选择不再调工具，但它这一轮输出的往往是自然语言草稿，
-            # 不是最终 JSON。把它记进 trace 供排查，但**不写回 messages**——
-            # 否则收尾要求输出 JSON 时，模型会顺着这段草稿继续写，格式就跑了。
+            # 工具轮草稿不写回上下文，避免污染 JSON 收尾。
             trace.append({
                 "step": step + 1,
                 "action": "信息已足够",
@@ -435,7 +383,7 @@ def run(context, db_path, user_id, max_steps=3):
             })
             break
 
-        # 带 tool_calls 的 assistant 消息必须原样入栈，否则后续 tool 消息找不到对应 id
+        # 保留 tool_calls 消息，tool 结果才能对应。
         messages.append(message)
 
         for call in calls:
@@ -460,7 +408,7 @@ def run(context, db_path, user_id, max_steps=3):
                 "content": json.dumps(result, ensure_ascii=False),
             })
 
-    # 收尾：明确要求只输出 JSON，并且不再给工具，避免模型继续调工具
+    # 收尾只输出 JSON。
     messages.append({
         "role": "user",
         "content": (

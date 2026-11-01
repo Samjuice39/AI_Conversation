@@ -302,14 +302,7 @@ def request_completion(system_prompt, user_prompt):
 
 def chat_completion(messages, tools=None, temperature=0.3, max_tokens=1200,
                     json_mode=False):
-    """底层对话接口，返回完整 message 对象（含 content 与 tool_calls）。
-
-    与 request_completion 的区别：这里不做「只取 content」的裁剪，
-    因为工具调用时模型返回的是 tool_calls 而不是文本，调用方需要拿到原始结构。
-
-    仅支持 OpenAI 兼容协议；Anthropic 的工具调用协议格式不同，
-    当前不在此实现，调用方应自行降级。
-    """
+    """返回完整 message，保留 tool_calls；仅支持 OpenAI 兼容接口。"""
     active = _resolve(_load_config())
     if not active:
         raise RuntimeError("尚未配置大模型，请填写 llm_config.json")
