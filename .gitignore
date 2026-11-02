@@ -25,6 +25,7 @@ __pycache__/
 *.db
 *.log
 /output/
+/提交材料/
 
 # 密钥 / 本地私有配置
 llm_config.json
