@@ -297,7 +297,7 @@ _COLLECT_SYSTEM = """你要判断：为了恰当地回应这个人，需不需�
 - 只调工具，不要写回应文字。"""
 
 
-def collect(context, db_path, user_id, max_steps=2):
+def collect(context, db_path, user_id, max_steps=2, llm_config=None):
     """只收集工具结果，不生成用户可见文字。"""
     messages = [
         {"role": "system", "content": _COLLECT_SYSTEM},
@@ -316,7 +316,7 @@ def collect(context, db_path, user_id, max_steps=2):
     model = None
 
     for step in range(max_steps):
-        message, active = chat_completion(messages, tools=TOOLS, temperature=0.3)
+        message, active = chat_completion(messages, tools=TOOLS, temperature=0.3, config=llm_config)
         model = (active or {}).get("model") or model
 
         calls = message.get("tool_calls") or []
@@ -351,7 +351,7 @@ def collect(context, db_path, user_id, max_steps=2):
     return {"facts": facts, "trace": trace, "model": model}
 
 
-def run(context, db_path, user_id, max_steps=3):
+def run(context, db_path, user_id, max_steps=3, llm_config=None):
     """执行完整的工具调用流程，返回原始 message 与轨迹。"""
     messages = [
         {"role": "system", "content": _AGENT_SYSTEM},
@@ -370,7 +370,7 @@ def run(context, db_path, user_id, max_steps=3):
     active = None
 
     for step in range(max_steps):
-        message, active = chat_completion(messages, tools=TOOLS, temperature=0.4)
+        message, active = chat_completion(messages, tools=TOOLS, temperature=0.4, config=llm_config)
 
         calls = message.get("tool_calls") or []
         if not calls:
@@ -421,7 +421,7 @@ def run(context, db_path, user_id, max_steps=3):
         ),
     })
     final, active = chat_completion(messages, tools=None, temperature=0.2,
-                                    max_tokens=2000, json_mode=True)
+                                    max_tokens=2000, json_mode=True, config=llm_config)
     if isinstance(final, dict):
         final = dict(final)
         final["content"] = _normalize(final.get("content"))

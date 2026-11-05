@@ -12,6 +12,7 @@ import agent_workflow
 from ai_coach import (CRISIS_PATTERN, analyze as ai_analyze, generate_insights,
                       validate_result)
 from llm_client import describe as llm_describe
+from urllib.parse import urlparse
 from user_profile import (build_profile, clean_preferred_name, format_for_prompt,
                           infer_nickname)
 
@@ -49,16 +50,17 @@ def run_analysis(text, context, sleep, history, user_id, persona="gentle",
     profile_hint = format_for_prompt(profile)
     if profile_hint:
         payload["userProfile"] = profile_hint
+    llm_config = get_user_llm_config(user_id)
 
     facts, trace = [], None
-    if AGENT_MODE:
+    if AGENT_MODE and llm_config:
         try:
-            info = agent_workflow.collect(payload, DB_PATH, user_id)
+            info = agent_workflow.collect(payload, DB_PATH, user_id, llm_config=llm_config)
             facts, trace = info.get("facts") or [], info.get("trace")
         except Exception as exc:  # noqa: BLE001 - 取数失败就退回纯单轮
             print(f"[Agent] 信息收集失败，按单轮处理：{exc}")
 
-    result = ai_analyze(payload, facts)
+    result = ai_analyze(payload, facts, llm_config=llm_config)
     result["trace"] = trace
     result["personalization"] = profile
     if facts:
@@ -92,6 +94,18 @@ def init_db():
                 password_hash TEXT NOT NULL,
                 preferred_name TEXT,
                 created_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_ai_settings (
+                user_id INTEGER PRIMARY KEY,
+                provider TEXT NOT NULL DEFAULT 'openai',
+                api_key TEXT NOT NULL,
+                model TEXT NOT NULL,
+                base_url TEXT NOT NULL,
+                timeout REAL NOT NULL DEFAULT 60,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             )
         """)
         conn.execute("""
@@ -250,6 +264,7 @@ def delete_account():
             return jsonify({"ok": False, "error": "密码不正确，账号未注销"}), 403
         conn.execute("DELETE FROM checkins WHERE user_id = ?", (user[0],))
         conn.execute("DELETE FROM conversations WHERE user_id = ?", (user[0],))
+        conn.execute("DELETE FROM user_ai_settings WHERE user_id = ?", (user[0],))
         conn.execute("DELETE FROM users WHERE id = ?", (user[0],))
     session.clear()
     return jsonify({"ok": True})
@@ -267,9 +282,76 @@ def me():
                     "preferredName": preferred_name})
 
 
+def get_user_llm_config(user_id):
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT provider, api_key, model, base_url, timeout FROM user_ai_settings WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+    if not row or not row["api_key"] or not row["model"]:
+        return None
+    return {
+        "provider": row["provider"], "apiKey": row["api_key"], "model": row["model"],
+        "baseUrl": row["base_url"], "timeout": row["timeout"],
+    }
+
+
+def public_ai_settings(user_id):
+    config = get_user_llm_config(user_id)
+    return {
+        "enabled": bool(config), "provider": "openai",
+        "baseUrl": config["baseUrl"] if config else "https://api.deepseek.com/v1",
+        "model": config["model"] if config else "deepseek-chat",
+        "hasApiKey": bool(config),
+    }
+
+
 @app.route("/api/ai/status")
 def ai_status():
-    return jsonify({"ok": True, "llm": llm_describe()})
+    user = require_user()
+    config = get_user_llm_config(user[0])
+    description = llm_describe(config or {"provider": "none"})
+    description["note"] = "使用当前账号的大模型配置" if config else "未填写 API，使用本地规则模型"
+    return jsonify({"ok": True, "llm": description})
+
+
+@app.route("/api/ai/settings", methods=["GET", "PUT", "DELETE"])
+def ai_settings():
+    user = require_user()
+    if request.method == "GET":
+        return jsonify({"ok": True, "settings": public_ai_settings(user[0])})
+    if request.method == "DELETE":
+        with get_db() as conn:
+            conn.execute("DELETE FROM user_ai_settings WHERE user_id = ?", (user[0],))
+        return jsonify({"ok": True})
+
+    body = request.get_json(silent=True) or {}
+    api_key = str(body.get("apiKey") or "").strip()
+    model = str(body.get("model") or "").strip()
+    base_url = str(body.get("baseUrl") or "").strip().rstrip("/")
+    parsed = urlparse(base_url)
+    local_host = parsed.hostname in ("localhost", "127.0.0.1", "::1")
+    if parsed.scheme not in ("https", "http") or not parsed.hostname:
+        return jsonify({"ok": False, "error": "请填写完整的 API 地址，例如 https://api.deepseek.com/v1"}), 400
+    if parsed.scheme != "https" and not local_host:
+        return jsonify({"ok": False, "error": "远程 API 地址必须使用 HTTPS；本地服务可使用 HTTP"}), 400
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        return jsonify({"ok": False, "error": "API 地址不能包含账号、密码、查询参数或锚点"}), 400
+    if len(base_url) > 300 or not 1 <= len(model) <= 100 or len(api_key) > 500:
+        return jsonify({"ok": False, "error": "模型名称或 API 地址格式不正确"}), 400
+    existing = get_user_llm_config(user[0])
+    if not api_key and not existing:
+        return jsonify({"ok": False, "error": "请填写自己的 API Key；也可以取消，直接使用本地规则模型"}), 400
+    api_key = api_key or existing["apiKey"]
+    with get_db() as conn:
+        conn.execute("""
+            INSERT INTO user_ai_settings (user_id, provider, api_key, model, base_url, timeout, updated_at)
+            VALUES (?, 'openai', ?, ?, ?, 60, datetime('now','localtime'))
+            ON CONFLICT(user_id) DO UPDATE SET
+                provider='openai', api_key=excluded.api_key, model=excluded.model,
+                base_url=excluded.base_url, timeout=60, updated_at=excluded.updated_at
+        """, (user[0], api_key, model, base_url))
+    return jsonify({"ok": True, "settings": public_ai_settings(user[0])})
 
 
 def conversation_dict(row):
@@ -514,9 +596,10 @@ def ai_insights():
     if stats["total"] < 3:
         return jsonify({"ok": False, "error": "至少完成 3 次记录后，才能生成有边界的阶段回顾"}), 400
     try:
-        result = generate_insights(stats)
+        result = generate_insights(stats, llm_config=get_user_llm_config(user[0]))
     except Exception as exc:
-        return jsonify({"ok": False, "error": f"AI 回顾失败：{exc}"}), 503
+        print(f"[AI] 阶段回顾请求失败，改用本地规则：{type(exc).__name__}: {exc}")
+        result = generate_insights(stats)
     return jsonify({"ok": True, "report": result})
 
 

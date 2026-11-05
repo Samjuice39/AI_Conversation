@@ -1,61 +1,15 @@
 # coding: utf-8
 import json
-import os
 import urllib.error
 import urllib.request
-
-_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-_CONFIG_PATH = os.path.join(_BASE_DIR, "llm_config.json")
 
 # 默认模型
 ANTHROPIC_DEFAULT_MODEL = "claude-opus-5"
 
-_KNOWN_KEYS = {"provider", "apiKey", "model", "baseUrl", "timeout"}
-_config_cache = None
-
-def _load_config():
-    global _config_cache
-    if _config_cache is not None:
-        return _config_cache
-    cfg = {
-        "provider": "none",
-        "apiKey": "",
-        "model": "",
-        "baseUrl": "",
-        "timeout": 10.0,
-    }
-    try:
-        with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
-            file_cfg = json.load(f)
-        if isinstance(file_cfg, dict):
-            for key, value in file_cfg.items():
-                if key in _KNOWN_KEYS and value not in (None, ""):
-                    cfg[key] = value
-    except FileNotFoundError:
-        pass
-    except Exception as e:
-        print(f"[AI] 读取 llm_config.json 失败，忽略该文件: {e}")
-    for env_key, cfg_key in (
-        ("EMOTION_LLM_PROVIDER", "provider"),
-        ("EMOTION_LLM_API_KEY", "apiKey"),
-        ("EMOTION_LLM_MODEL", "model"),
-        ("EMOTION_LLM_BASE_URL", "baseUrl"),
-        ("EMOTION_LLM_TIMEOUT", "timeout"),
-    ):
-        value = os.environ.get(env_key)
-        if value:
-            cfg[cfg_key] = value
-    cfg["provider"] = str(cfg.get("provider") or "none").strip().lower()
-    try:
-        cfg["timeout"] = float(cfg.get("timeout") or 10.0)
-    except (TypeError, ValueError):
-        cfg["timeout"] = 10.0
-    _config_cache = cfg
-    return cfg
 
 def _resolve(cfg):
     # 补全配置
-    provider = cfg["provider"]
+    provider = str(cfg.get("provider") or "none").strip().lower()
     api_key = str(cfg.get("apiKey") or "").strip()
     if provider in ("", "none") or not api_key:
         return None
@@ -83,12 +37,8 @@ def _resolve(cfg):
     print(f"[AI] 不认识的 provider: {provider!r}，已降级为内置提示")
     return None
 
-def is_enabled():
-    # 是否已配置
-    return _resolve(_load_config()) is not None
-
-def describe():
-    active = _resolve(_load_config())
+def describe(config=None):
+    active = _resolve(config or {})
     if not active:
         return {
             "enabled": False,
@@ -176,11 +126,11 @@ def _call_openai(active, system_prompt, user_prompt, json_mode=False):
         raise RuntimeError("模型返回空内容")
     return text
 
-def request_completion(system_prompt, user_prompt):
+def request_completion(system_prompt, user_prompt, config=None):
     """供结构化 AI 功能复用的统一模型入口；不在此处伪装降级结果。"""
-    active = _resolve(_load_config())
+    active = _resolve(config or {})
     if not active:
-        raise RuntimeError("尚未配置大模型，请填写 llm_config.json")
+        raise RuntimeError("尚未配置大模型，请先在页面的「AI 设置」中填写接口")
     if active["provider"] == "anthropic":
         text = _call_anthropic(active, system_prompt, user_prompt)
     else:
@@ -189,11 +139,11 @@ def request_completion(system_prompt, user_prompt):
 
 
 def chat_completion(messages, tools=None, temperature=0.3, max_tokens=1200,
-                    json_mode=False):
+                    json_mode=False, config=None):
     """返回完整 message，保留 tool_calls；仅支持 OpenAI 兼容接口。"""
-    active = _resolve(_load_config())
+    active = _resolve(config or {})
     if not active:
-        raise RuntimeError("尚未配置大模型，请填写 llm_config.json")
+        raise RuntimeError("尚未配置大模型，请先在页面的「AI 设置」中填写接口")
     if active["provider"] == "anthropic":
         raise RuntimeError("工具调用仅支持 OpenAI 兼容接口，请切换 provider")
 

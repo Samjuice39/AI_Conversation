@@ -1,62 +1,22 @@
-# 第三方库 / 工具包（不是自研代码）
-three.js-dev/
-libs/
-*/libs/
-stm32-离线包/
-node_modules/
+# Python 环境与缓存
 .venv/
 venv/
-
-# 数据集 / 网上下载的资料
-WESAD/
-WPED/
-SSP_manuscript-main/
-*.pkl
-*.zip
-*.tar.bz2
-*.h5
-*.npy
-*.pth
-*.ckpt
-
-# 运行时产物
 __pycache__/
 *.py[cod]
+
+# 本地运行数据
 *.db
 *.log
 /output/
 /提交材料/
 
-# 密钥 / 本地私有配置
-llm_config.json
+# 本地私有配置
 .env
-.env.*
-!.env.example
+llm_config.json
 
-# IDE / 系统 / 备份
+# IDE 与系统文件
 .idea/
 .vscode/
-.claude/
 .DS_Store
 Thumbs.db
 *.bak
-_old_git_backup/
-
-# 文档：只保留 README 和项目书
-*.md
-!README.md
-*.pdf
-*.xlsx
-*.docx
-!附件1：大学生创新训练项目申报表.docx
-*.ps1
-*.bat
-# 桌面端启动脚本属于项目代码，必须进仓库
-!desktop/启动桌面端.cmd
-
-# 未使用的素材 / 杂项
-NormalMap.png
-小熊.glb
-小猫.glb
-logo.jpg
-project.private.config.json

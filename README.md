@@ -151,7 +151,19 @@ python app.py
 
 浏览器打开 <http://127.0.0.1:5001>，首次使用需注册账号（本地库，不联网）。
 
-未配置模型时系统以关键词模式运行，界面会明确标注，功能不受影响。
+未配置模型时系统以本地规则模式运行，界面会明确标注，功能不受影响。
+
+点击聊天框右上角的 **「AI 设置」**，每个登录账号都可以填写自己的 API 地址、模型名称和 API Key。网页对话只使用当前账号在「AI 设置」中保存的配置，不读取任何全局密钥。不填写或清除配置时使用本地规则模型；接口超时、密钥失效或返回格式错误也会自动回退，不会中断对话。
+
+以 DeepSeek 为例：
+
+| 设置项 | 填写内容 |
+|---|---|
+| API 地址 | `https://api.deepseek.com/v1` |
+| 模型名称 | `deepseek-chat` |
+| API Key | 测试者自己申请的密钥 |
+
+密钥仅保存在运行程序的这台电脑的 SQLite 数据库中，不会回显到网页，也不会提交到 Git。本地版本不适合直接作为多用户公网服务部署。
 
 ### 常见错误
 
@@ -174,60 +186,9 @@ python -m pip install -r requirements.txt
 
 ## 配置说明
 
-模型配置支持两种方式，**环境变量优先于配置文件**。
+只需要在网页里配置，不再需要复制或编辑任何模板文件。
 
-### 方式一：环境变量（推荐，适合部署）
-
-复制 `.env.example` 为 `.env`，按需填写；应用启动时会自动读取，系统里已存在的环境变量优先。
-
-```bash
-# Windows PowerShell / CMD
-copy .env.example .env
-
-# macOS / Linux
-cp .env.example .env
-```
-
-也可以直接导出：
-
-```bash
-export EMOTION_LLM_PROVIDER=openai
-export EMOTION_LLM_API_KEY=your-key-here
-export EMOTION_LLM_MODEL=deepseek-chat
-export EMOTION_LLM_BASE_URL=https://api.deepseek.com/v1
-export EMOTION_LLM_TIMEOUT=60
-export HOST=127.0.0.1
-export PORT=5001
-```
-
-Windows PowerShell：
-
-```powershell
-$env:EMOTION_LLM_PROVIDER="openai"
-$env:EMOTION_LLM_API_KEY="your-key-here"
-```
-
-### 方式二：配置文件（适合本地开发）
-
-复制 `llm_config.example.json` 为 `llm_config.json`，填入自己的密钥。该文件已被 `.gitignore` 排除，**不会进入仓库**。
-
-```json
-{
-  "provider": "openai",
-  "apiKey": "your-key-here",
-  "model": "deepseek-chat",
-  "baseUrl": "https://api.deepseek.com/v1",
-  "timeout": 60
-}
-```
-
-### 支持的服务商
-
-| provider | 说明 |
-|---|---|
-| `openai` | 任何兼容 `/v1/chat/completions` 的服务：DeepSeek、通义千问、Kimi、本地 Ollama 等 |
-| `anthropic` | Claude 系列，需额外 `pip install anthropic` |
-| `none` | 不接入模型，走关键词兜底 |
+登录后打开聊天框右上角的「AI 设置」，每个账号独立保存自己的配置。支持 OpenAI 兼容的 `/chat/completions` 接口，例如 DeepSeek、通义千问、Kimi 和本地 Ollama；API 地址不带末尾的 `/chat/completions`，程序会自动补上。已保存密钥时，密钥输入框留空表示不修改；点击「清除 API，使用规则模型」会删除该账号的配置。
 
 ---
 
@@ -245,8 +206,6 @@ $env:EMOTION_LLM_API_KEY="your-key-here"
 ├── llm_client.py             模型客户端：多服务商适配
 ├── emotion-planet.html       主界面：对话 + 情绪可视化 + 统计
 ├── login.html                登录/注册页
-├── llm_config.example.json   配置模板（不含真实密钥）
-├── .env.example              环境变量模板（不含真实密钥）
 ├── requirements.txt          依赖清单
 └── emotion_planet.db         SQLite 数据库（运行时生成，已 gitignore）
 ```
@@ -415,7 +374,7 @@ $env:EMOTION_LLM_API_KEY="your-key-here"
 - **不编造**：要求模型只能依据提供的对话历史肯定具体努力，不得编造共同经历。
 - **危机优先**：自伤表述由本地规则拦截，优先于模型判断，避免模型「温和化」处理。
 - **密码安全**：`werkzeug.security` 加盐哈希，数据库不存明文。
-- **密钥隔离**：配置文件与 `.env` 均在 `.gitignore` 中，仓库只保留模板。
+- **密钥隔离**：每个网页账号使用自己的 API 配置；密钥不回显、不写入前端存储，本地数据库不进入 Git。本地 SQLite 中的用户密钥未加密，不应把数据库文件发给别人。
 - **数据本地化**：默认 SQLite 本地存储，不向第三方上传对话记录（模型调用除外）。
 
 ---

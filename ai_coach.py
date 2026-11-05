@@ -313,12 +313,12 @@ def _retrieve_knowledge(text, top_k=3):
         return []
 
 
-def analyze(context, facts=None):
+def analyze(context, facts=None, llm_config=None):
     text = context["text"]
     persona = normalize_persona(context.get("persona"))
     spec = get_persona_spec(persona, context.get("customPersona"))
     local_crisis = bool(CRISIS_PATTERN.search(text))
-    if not describe().get("enabled"):
+    if not describe(llm_config or {"provider": "none"}).get("enabled"):
         result = _fallback(text)
         result.update({"source": "fallback", "model": None, "persona": persona})
         return result
@@ -357,7 +357,13 @@ def analyze(context, facts=None):
     last_error = None
     for attempt in range(2):
         correction = "\n上一次输出不是合法 JSON。这次必须检查引号、逗号和括号，只输出完整 JSON。\n" if attempt else ""
-        raw, active = request_completion("", spec["system"] + correction + example + user_prompt)
+        try:
+            raw, active = request_completion(
+                "", spec["system"] + correction + example + user_prompt, config=llm_config
+            )
+        except Exception as exc:
+            print(f"[AI] 当前账号的模型请求失败，改用本地规则：{type(exc).__name__}: {exc}")
+            break
         try:
             result = _validate(_extract_json(raw), local_crisis)
             result.update({"source": "llm", "model": active["model"], "persona": persona})
@@ -365,13 +371,29 @@ def analyze(context, facts=None):
         except ValueError as exc:
             last_error = exc
             print(f"[AI] 第 {attempt + 1} 次结构化输出校验失败：{exc}")
-    raise ValueError(f"模型连续两次未返回有效结构化结果：{last_error}")
+    result = _fallback(text)
+    result.update({"source": "fallback", "model": None, "persona": persona})
+    if llm_config:
+        result["summary"] = "本次大模型接口未返回有效结果，已临时使用本地规则模型。请在「AI 设置」中检查接口地址、密钥和模型名称。"
+    return result
 
 
-def generate_insights(payload):
-    if not describe().get("enabled"):
-        raise RuntimeError("尚未配置大模型，无法生成 AI 阶段回顾")
-    raw, active = request_completion("", _REPORT_PROMPT + "\n实际统计数据：\n" + json.dumps(payload, ensure_ascii=False))
+def generate_insights(payload, llm_config=None):
+    if not describe(llm_config or {"provider": "none"}).get("enabled"):
+        total = int(payload.get("total") or 0)
+        distribution = payload.get("distribution") or {}
+        common = max(distribution, key=distribution.get) if distribution else "暂无"
+        return {
+            "title": "本地规则阶段回顾",
+            "overview": f"目前共有 {total} 条记录，近 30 天记录较多的状态是「{common}」。这是基于记录条数的统计，不做情绪原因推断。",
+            "patterns": ["继续记录具体事件和当下感受，有助于观察变化。"],
+            "nextStep": "下一次记录时，可以补充发生这件事前后的一个具体细节。",
+            "model": None,
+        }
+    raw, active = request_completion(
+        "", _REPORT_PROMPT + "\n实际统计数据：\n" + json.dumps(payload, ensure_ascii=False),
+        config=llm_config,
+    )
     value = _extract_json(raw)
     result = {
         "title": str(value.get("title") or "阶段情绪回顾")[:60],
