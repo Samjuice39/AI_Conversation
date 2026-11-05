@@ -9,6 +9,7 @@ from flask import Flask, jsonify, request, send_from_directory, session
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import agent_workflow
+from speech_recognizer import transcribe_wav
 from ai_coach import (CRISIS_PATTERN, analyze as ai_analyze, generate_insights,
                       validate_result)
 from llm_client import describe as llm_describe
@@ -304,6 +305,26 @@ def public_ai_settings(user_id):
         "model": config["model"] if config else "deepseek-chat",
         "hasApiKey": bool(config),
     }
+
+
+@app.route("/api/speech/transcribe", methods=["POST"])
+def transcribe_speech():
+    require_user()
+    audio = request.files.get("audio")
+    if not audio:
+        return jsonify({"ok": False, "error": "没有收到录音"}), 400
+    if request.content_length and request.content_length > 1_100_000:
+        return jsonify({"ok": False, "error": "录音不能超过 30 秒"}), 413
+    try:
+        text = transcribe_wav(audio)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        print(f"[语音] 离线识别失败：{type(exc).__name__}: {exc}")
+        return jsonify({"ok": False, "error": "离线语音识别不可用，请检查安装步骤或直接使用文字输入"}), 503
+    if not text:
+        return jsonify({"ok": False, "error": "没有听清，请靠近麦克风再说一次"}), 422
+    return jsonify({"ok": True, "text": text})
 
 
 @app.route("/api/ai/status")

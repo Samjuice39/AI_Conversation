@@ -1,11 +1,2 @@
-# 必装：Web 框架
 flask>=3.0
-
-# 大模型情绪陪护（可选）
-#
-# 只有在 llm_config.json 里把 provider 设为 "anthropic"（使用 Claude）时，
-# 才需要装这个包。其余情况（含 DeepSeek / 通义 / 本地 Ollama 等
-# OpenAI 兼容服务）走标准库，不需要额外依赖。
-#
-#    pip install anthropic
-# anthropic
+vosk>=0.3.45
