@@ -13,6 +13,7 @@
 - [技术栈](#技术栈)
 - [快速开始](#快速开始)
 - [配置说明](#配置说明)
+- [接口一览](#接口一览)
 - [目录结构](#目录结构)
 - [AI 技术设计](#ai-技术设计)
 - [安全与边界](#安全与边界)
@@ -31,7 +32,9 @@
 模型不直接输出一段文字，而是输出固定字段的 JSON：情绪类别（6 类）、强度（1–5）、置信度（0–1）、客观摘要、回应、建议、触发因素、追问、风险等级。前端按字段分别渲染，情绪类别驱动界面配色。
 
 **语音输入**
-聊天框支持中文语音转文字，使用浏览器 Web Speech API。识别结果填入输入框后仍可修改再发送；不支持语音的浏览器、非 HTTPS/localhost 环境会自动降级为文字输入。**识别是否可用取决于浏览器厂商的在线语音服务**，不是项目本地模型；出现 `network` 错误时需要更换网络或浏览器，也可以直接使用文字输入。
+聊天框支持中文语音转文字，默认走**本地离线模型** SenseVoice-Small（FunASR），音频不出本机、不经过任何在线语音服务。前端用 `MediaRecorder` 采集，在浏览器里直接转成 16kHz 单声道 WAV 再上传，因此不需要在本机另装 ffmpeg。识别结果填入输入框后仍可修改再发送，并会附带模型判断的语种与情绪（如「中文 · 中性」）。
+
+本地模型不可用时（依赖装不上、权重加载失败、`ASR_MODE=off`）会自动退回浏览器 Web Speech API；两者都不可用则保持文字输入。**在线兜底是否可用取决于浏览器厂商的语音服务**，出现 `network` 错误时换网络或直接用文字即可。
 
 **反馈闭环**
 每条 AI 回应下方可标注「有帮助 / 不适合我」，反馈落库后参与后续对话上下文，并计入「建议被采纳率」统计。
@@ -50,17 +53,20 @@
 
 五层结构自上而下：**表现层**负责对话与可视化，**接入层**承担路由、鉴权、参数校验与持久化，**AI 分析层**完成 Prompt 构造、结构化解析、字段校验与降级兜底，**数据层**以 SQLite 保存账号、话题与情绪记录，**模型适配层**屏蔽不同服务商的接口差异。
 
+**语音支路**独立于这五层：表现层采集麦克风并在浏览器内转成 16kHz WAV，接入层校验后交给本机的 `sensevoice_asr.py` 推理，文字回到输入框再走正常对话链路。全程不经过任何外部服务。架构图绘制于语音模块接入之前，语音链路的完整说明见 [本地语音识别](#本地语音识别的工程取舍)。
+
 实线表示主调用链与数据流，虚线表示降级路径与外部依赖。
 
-
-四层职责：
+各层职责（语音作为独立支路单列）：
 
 | 层 | 文件 | 职责 |
 |---|---|---|
-| 接入层 | `app.py` | 路由、会话鉴权、参数校验、数据持久化 |
+| 接入层 | `app.py` | 路由、会话鉴权、参数校验、数据持久化、语音上传校验、依赖自检 |
 | 分析层 | `ai_coach.py` | Prompt 构造、结构化输出解析、字段校验、重试、降级 |
 | 模型层 | `llm_client.py` | 多服务商适配（OpenAI 兼容 / Anthropic）、超时与错误归一化 |
-| 展示层 | `emotion-planet.html` | 对话渲染、情绪可视化、统计图表 |
+| 展示层 | `emotion-planet.html` | 对话渲染、情绪可视化、统计图表、录音与浏览器端转码 |
+| 数据层 | `emotion_planet.db` | SQLite：账号、话题、情绪记录、反馈与 AI 配置 |
+| 语音层 | `sensevoice_asr.py` | SenseVoice-Small 离线推理：语音转文字，附带语种 / 情绪 / 事件标签 |
 
 设计上刻意让「分析层」与「模型层」分离：换模型只需改配置，不动业务逻辑；未配置模型时整条链路自动降级为关键词模式，界面明确标注「本地演示 · 非 AI」，不伪装成模型结果。
 
@@ -70,10 +76,11 @@
 
 | 类别 | 选型 | 说明 |
 |---|---|---|
-| 后端 | Python 3.13 + Flask 3.x | 轻量，单进程即可运行 |
+| 后端 | Python 3.10+ + Flask 3.x | 轻量，单进程即可运行；已在 3.14 上验证 |
 | 数据库 | SQLite | 零配置，便于评审一键运行 |
 | 前端 | 原生 HTML / CSS / JavaScript | **零第三方依赖**，无 CDN、无构建步骤，首屏无网络等待 |
-| 语音输入 | Web Speech API | 浏览器内置识别，不引入语音服务依赖 |
+| 语音输入 | SenseVoice-Small（本地）/ Web Speech API（兜底） | 主路径为本地离线推理，音频不出本机；本地不可用时退回浏览器在线识别 |
+| 语音推理 | FunASR + PyTorch（CPU） | 启动时自检，缺依赖自动补装；不需要 GPU，也不需要 ffmpeg |
 | 模型接入 | OpenAI 兼容协议 / Anthropic | 可切换 DeepSeek、通义、Ollama 等 |
 | 密码存储 | Werkzeug `generate_password_hash` | 加盐哈希，不存明文 |
 
@@ -87,17 +94,20 @@
 
 - Python 3.10 及以上
 - **必装：Flask 3.x**（Web 框架，不装会报 `No module named 'flask'`）
+- 自动补装（无需手动）：`funasr` / `torch` / `torchaudio`，启动时自检，缺了在后台 `pip install`
+- 本地语音另需模型权重（约 900MB）：首次识别自动下载，或用 `pack_model.py` 随包分发
 - 可选：`anthropic`，只有使用 Claude 时才需要
-- 无需 Node.js，无需单独安装数据库
+- 无需 Node.js、无需 ffmpeg、无需单独安装数据库
 
 ### 依赖清单
 
-| 依赖 | 是否必装 | 用途 |
+| 依赖 | 是否需要装 | 用途 |
 |---|---|---|
-| `flask>=3.0` | 是 | 启动 Web 服务、提供 API 和页面 |
+| `flask>=3.0` | 必须手动装 | 启动 Web 服务、提供 API 和页面 |
+| `funasr` + `torch` + `torchaudio` | 自动 | 本地语音识别（SenseVoice-Small）。启动时自检补装；装不上则语音自动退回浏览器在线识别，其余功能不受影响 |
 | `anthropic` | 否 | 仅在 `provider=anthropic` 时使用；DeepSeek、通义、Ollama 等不需要 |
 
-`requirements.txt` 里已经写了必装依赖：
+`requirements.txt` 里只写必装依赖，语音依赖故意不列进去——它由 `app.py` 在启动时按需安装，避免 `pip install -r` 一次性拉几百 MB 让人以为项目很重。
 
 ```text
 flask>=3.0
@@ -151,6 +161,8 @@ python app.py
 
 浏览器打开 <http://127.0.0.1:5001>，首次使用需注册账号（本地库，不联网）。
 
+首次启动如果缺本地语音依赖，终端会打印安装进度，网页此时可以先正常用文字；装好后刷新页面即可用本地识别。
+
 未配置模型时系统以本地规则模式运行，界面会明确标注，功能不受影响。
 
 点击聊天框右上角的 **「AI 设置」**，每个登录账号都可以填写自己的 API 地址、模型名称和 API Key。网页对话只使用当前账号在「AI 设置」中保存的配置，不读取任何全局密钥。不填写或清除配置时使用本地规则模型；接口超时、密钥失效或返回格式错误也会自动回退，不会中断对话。
@@ -190,6 +202,81 @@ python -m pip install -r requirements.txt
 
 登录后打开聊天框右上角的「AI 设置」，每个账号独立保存自己的配置。支持 OpenAI 兼容的 `/chat/completions` 接口，例如 DeepSeek、通义千问、Kimi 和本地 Ollama；API 地址不带末尾的 `/chat/completions`，程序会自动补上。已保存密钥时，密钥输入框留空表示不修改；点击「清除 API，使用规则模型」会删除该账号的配置。
 
+### 本地语音识别
+
+默认启用，不需要任何配置。`python app.py` 启动时会自检 `torch` / `torchaudio` / `funasr`，缺哪个就在后台用**当前解释器**执行 `pip install` 补上——不阻塞网页启动，装好之后前端语音会自动从在线切回本地。装不上也不影响文字对话（语音退回浏览器在线识别），失败原因会写进 `/api/asr/status` 的 `deps.message`。
+
+`flask` 是唯一需要手动装的依赖，其余都可以自动补。
+
+可用环境变量调整：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `ASR_MODE` | `local` | 设为 `off` 关闭本地识别，语音退回浏览器在线识别 |
+| `ASR_AUTO_INSTALL` | `1` | 设为 `0` 关闭自动安装（离线机器、内网环境建议关掉） |
+| `ASR_DEVICE` | `cpu` | 有 CUDA 时可设为 `cuda:0` |
+| `ASR_MAX_BYTES` | `20971520` | 单次上传上限（字节），对应约 10 分钟 16kHz WAV |
+
+自动安装的判断依据是包能否 `import`，安装进度和失败原因通过 `GET /api/asr/status` 的 `deps` 字段暴露（`state` 依次可能是 `present` / `installing` / `installed` / `failed` / `disabled`）。
+
+启动后可用 `GET /api/asr/status` 查看模型是否就绪（`available` / `cached` / `loaded`）。
+
+识别接口为 `POST /api/asr`，需登录：表单字段 `audio`（16kHz 单声道 WAV）+ `language`（`auto` 或 `zh`/`en`/`yue`/`ja`/`ko`），返回 `text`、`languageText`、`emotionText`、`eventsText`、`elapsed`。测试：
+
+```bash
+python sensevoice_asr.py samples/asr_example_zh.wav
+```
+
+### 把项目发给别人时，模型带不带
+
+模型权重默认在 `~/.cache/modelscope`（约 900MB），**不在项目里**。所以直接发代码，对方拿到的是 1.8MB 的轻量版本。
+
+| 方式 | 体积 | 对方体验 |
+|---|---|---|
+| 只发代码 | 1.8MB | 语音自动走浏览器在线识别；若对方装了 `funasr`，首次识别会自动下载约 900MB 权重后转本地 |
+| 代码 + `models/` | 约 900MB | 装好依赖后开箱即用，完全离线、不联网 |
+
+要带上模型，在本机执行一次：
+
+```bash
+python pack_model.py
+```
+
+它把本机缓存里的 SenseVoiceSmall 和 VAD 复制到 `models/`，之后程序自动优先用这份权重（`/api/asr/status` 的 `source` 会从 `cache` 变成 `bundled`）。`models/` 已在 `.gitignore` 中，不会进 Git；用网盘或 U 盘随发布包一起给即可。
+
+对方拿到后只需要装一个 `flask`，其余启动时自动补：
+
+```bash
+python -m pip install flask
+python app.py
+```
+
+启动时会后台自检并安装 `torch` / `torchaudio` / `funasr`（首次约几分钟，期间网页可以正常用文字对话，装好后语音自动切回本地）。不用装 ffmpeg —— 录音已在浏览器端转成 16kHz WAV。
+
+---
+
+## 接口一览
+
+除注册和登录外，所有接口都要求已登录（基于 Flask session），未登录返回 401。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/auth/register` · `/api/auth/login` · `/api/auth/logout` | 注册 / 登录 / 退出 |
+| GET | `/api/auth/me` | 当前账号与称呼 |
+| DELETE | `/api/auth/account` | 注销账号，需验证密码 |
+| POST | `/api/chat` | 对话主接口：入参文本 / 情境 / 人设，返回结构化情绪结果 |
+| GET · POST | `/api/conversations` | 话题列表 / 新建话题 |
+| GET | `/api/conversations/<id>/messages` | 话题内全部记录 |
+| DELETE | `/api/conversations/<id>` | 删除话题及其记录 |
+| POST | `/api/checkins/<id>/feedback` | 标记回应是否有帮助 |
+| GET | `/api/history` | 最近记录，`limit` 默认 30、上限 100 |
+| GET | `/api/insights` | 统计：分布、近 7 天趋势、采纳率 |
+| POST | `/api/insights/ai` | 阶段回顾，需至少 3 条记录 |
+| GET · PUT · DELETE | `/api/ai/settings` | 各账号独立的大模型配置 |
+| GET | `/api/ai/status` | 当前使用的模型来源 |
+| GET | `/api/asr/status` | 本地语音状态：依赖、权重来源、是否已加载 |
+| POST | `/api/asr` | 语音识别：表单 `audio`（16kHz WAV）+ `language` |
+
 ---
 
 ## 目录结构
@@ -203,7 +290,13 @@ python -m pip install -r requirements.txt
 ├── user_profile.py           偏好学习：从反馈统计表达偏好，不推断人格
 ├── knowledge/
 │   └── interventions.json    干预策略知识库（40 条，6 类情绪）
+├── docs/                     架构图（drawio 源文件 + 导出的 PNG）
 ├── llm_client.py             模型客户端：多服务商适配
+├── sensevoice_asr.py         本地语音识别：SenseVoice-Small 离线推理（可选依赖）
+├── pack_model.py             导出模型权重到 models/，便于随项目分发
+├── models/                   模型权重（可选，由 pack_model.py 生成，不进 Git）
+├── samples/
+│   └── asr_example_zh.wav    语音识别自测样例（16kHz 单声道）
 ├── emotion-planet.html       主界面：对话 + 情绪可视化 + 统计
 ├── login.html                登录/注册页
 ├── requirements.txt          依赖清单
@@ -356,6 +449,30 @@ python -m pip install -r requirements.txt
 - 取数失败自动退回纯单轮，用户无感知。
 - 环境变量 `AGENT_MODE=0` 可关闭 Agent，用于对比两种模式。
 
+### 本地语音识别的工程取舍
+
+**为什么不直接用浏览器自带的 Web Speech API。** 它零成本，但识别发生在浏览器厂商的服务器上：国内网络经常直接报 `network` 错误，而且用户说的是一段情绪困扰，把音频送到第三方并不合适。本地模型才能让「音频不出本机」这句话真的成立。
+
+**为什么选 SenseVoice-Small。** 它一个模型同时给出文字、语种（中英粤日韩）、情绪（7 类）和音频事件（笑声 / 哭声 / 掌声等），正好贴合情绪陪伴场景——识别到的情绪可以与对话工作流里的判断互相印证。体积约 900MB，CPU 上 5.5 秒音频约 0.2 秒出结果，评审的笔记本不用显卡也能跑。代价是它更适合短语音，长录音要靠 VAD 切片。
+
+**为什么让浏览器转 WAV。** `MediaRecorder` 录出来是 webm/opus，本机没装 ffmpeg 时 torchaudio 读不了；要求用户装 ffmpeg 又破坏了「下载即运行」。所以在前端用 `decodeAudioData` 解出 PCM，降混单声道、线性重采样到 16kHz、手写 44 字节 WAV 头再上传。实测产出标准 `16000Hz / 1ch / 16bit`，后端按最普通的方式读取即可。
+
+完整链路：
+
+```text
+点击「语音输入」
+  → getUserMedia 采集麦克风
+  → MediaRecorder 录制（webm/opus，最长 60 秒）
+  → decodeAudioData 解码 → 降混单声道 → 重采样 16kHz → 编码 WAV
+  → POST /api/asr（临时文件，识别后立即删除）
+  → SenseVoice-Small 本机推理
+  → 文本 + 语种 + 情绪回填输入框，可修改后再发送
+```
+
+**三级降级，每一级都留痕迹。** 本地识别失败 → 浏览器在线识别 → 文字输入。前端在页面加载时先探测 `/api/asr/status`，不可用就直接绑在线识别，不会让用户先录一遍再报错；`source` 字段区分权重来自项目内（`bundled`）、本机缓存（`cache`）还是需要联网下载（`download`）。
+
+**依赖自己装，但不偷偷装。** 启动时用 `importlib.util.find_spec` 查 `torch` / `torchaudio` / `funasr`，缺了才在后台线程用 `sys.executable -m pip install` 补装，网页照常可用。装失败只把原因写进 `deps.message`，语音退回在线，不阻塞任何功能。这段逻辑做成幂等的模块级调用，`python app.py`、`flask run`、gunicorn 都能触发；`ASR_AUTO_INSTALL=0` 可整体关闭。
+
 ### 降级策略
 
 | 场景 | 行为 |
@@ -365,6 +482,10 @@ python -m pip install -r requirements.txt
 | 连续两次输出非法 JSON | 同上 |
 | 命中危机关键词 | 强制 `riskLevel=high`，返回固定安全建议，不依赖模型 |
 | 知识库缺失 / 检索异常 | 跳过检索，prompt 中不带参考素材，主流程不受影响 |
+| 本地语音依赖缺失 | 后台自动 `pip install`；安装期间语音走浏览器在线识别 |
+| 自动安装失败 / 无外网 | 语音退回浏览器在线识别，原因写入 `deps.message` |
+| 本地识别报错或超时 | 前端提示后改用浏览器在线识别，也可直接文字输入 |
+| 浏览器不支持录音 | 退回 Web Speech API；它也不可用则只保留文字输入 |
 
 ---
 
@@ -375,6 +496,7 @@ python -m pip install -r requirements.txt
 - **危机优先**：自伤表述由本地规则拦截，优先于模型判断，避免模型「温和化」处理。
 - **密码安全**：`werkzeug.security` 加盐哈希，数据库不存明文。
 - **密钥隔离**：每个网页账号使用自己的 API 配置；密钥不回显、不写入前端存储，本地数据库不进入 Git。本地 SQLite 中的用户密钥未加密，不应把数据库文件发给别人。
+- **语音不出本机**：默认识别在本机推理，音频转成临时文件后识别完立即删除，不落库、不上传任何第三方。
 - **数据本地化**：默认 SQLite 本地存储，不向第三方上传对话记录（模型调用除外）。
 
 ---
@@ -385,7 +507,7 @@ python -m pip install -r requirements.txt
 
 1. **Agent 能力有限**。工具调用只用于「取数」（查历史、查统计、检索策略），取回后仍由单轮调用生成回应；模型不能执行写操作，也不会多步规划复杂任务。
 2. **检索用 BM25F，非向量检索**。基于字面匹配 + 字段加权 + 情绪码查询扩展，能覆盖几十条知识库的召回，但没有语义泛化能力——换个说法可能召不回同一条策略。
-3. **语音依赖浏览器**。使用 Web Speech API，需要 Chrome/Edge 且运行在 HTTPS 或 localhost；不支持时降级为文字输入。图像输入仍未接入。
+3. **语音识别分两级**。默认走本地 SenseVoice-Small：CPU 推理，首次识别要加载权重（约 10–13 秒），之后单次 60 秒内音频通常 1 秒内出结果；进程常驻内存约 1.4 GB，加载瞬间峰值约 2.2 GB（实测 5.5 秒样例识别耗时 0.22 秒）。首次启动的自动安装需要能访问 PyPI，装不上会自动退回浏览器 Web Speech API（需 Chrome/Edge + HTTPS/localhost）。单次录音上限 60 秒，长段连续说话需要分段；图像输入仍未接入。
 4. **前端非 TypeScript**。原生 JS，无组件化与类型约束，可维护性有限。
 5. **情绪判断依赖自我描述**。用户表达不准确时，识别结果会随之偏移；系统不做交叉验证。
 6. **单机部署**。Flask 开发服务器，未做并发与生产级加固。
@@ -404,6 +526,8 @@ python -m pip install -r requirements.txt
 | 已完成 | 取数与生成分离的工作流：判断 → 工具 → 生成 | Agent |
 | 已完成 | 双人设、自定义风格、称呼学习、反馈与情绪轨迹偏好 | 个性化 |
 | 已完成 | 浏览器语音输入，支持权限与兼容性降级 | 多模态 |
+| 已完成 | 本地离线语音识别 SenseVoice-Small 接入，带在线兜底 | 多模态 |
+| 已完成 | 依赖自检与自动安装、模型权重随包分发 | 交付体验 |
 | 计划 | 前端迁移 TypeScript + 组件化 | 工程质量 |
 
 ---

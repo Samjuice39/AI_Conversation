@@ -10,6 +10,9 @@ __pycache__/
 /output/
 /提交材料/
 
+# 本地模型权重（约 900MB，不进 Git；用 pack_model.py 生成，随发布包单独分发）
+/models/
+
 # 本地私有配置
 .env
 llm_config.json
