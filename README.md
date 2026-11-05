@@ -86,9 +86,24 @@
 ### 环境要求
 
 - Python 3.10 及以上
-- 无需 Node.js、无需数据库服务
+- **必装：Flask 3.x**（Web 框架，不装会报 `No module named 'flask'`）
+- 可选：`anthropic`，只有使用 Claude 时才需要
+- 无需 Node.js，无需单独安装数据库
 
-### 安装
+### 依赖清单
+
+| 依赖 | 是否必装 | 用途 |
+|---|---|---|
+| `flask>=3.0` | 是 | 启动 Web 服务、提供 API 和页面 |
+| `anthropic` | 否 | 仅在 `provider=anthropic` 时使用；DeepSeek、通义、Ollama 等不需要 |
+
+`requirements.txt` 里已经写了必装依赖：
+
+```text
+flask>=3.0
+```
+
+### 命令行安装
 
 ```bash
 git clone https://github.com/Samjuice39/AI_Conversation.git
@@ -100,8 +115,33 @@ python -m venv .venv
 # macOS / Linux
 source .venv/bin/activate
 
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
+
+安装后确认 Flask 在当前解释器里：
+
+```bash
+python -c "import flask; print(flask.__version__)"
+```
+
+能打印版本号（例如 `3.1.3`）才算装对。
+
+### 用 IDEA / PyCharm 打开
+
+IDEA 最容易出问题的不是没装 Flask，而是 **Run 用的解释器不是装了 Flask 的那个**。按下面顺序设置：
+
+1. 打开项目目录 `AI_Conversation`。
+2. `File → Settings → Project → Python Interpreter`。
+3. 点 `Add Interpreter → Add Local Interpreter → Virtualenv Environment → New`。
+4. Base interpreter 选 Python 3.10 或以上，位置保持项目下的 `.venv`，确定。
+5. 打开 IDE 底部 `Terminal`，执行：
+
+```bash
+python -m pip install -r requirements.txt
+python -c "import flask; print(flask.__version__)"
+```
+
+6. 打开 `app.py`，右键 `Run 'app'`。如果右上角 Run Configuration 里选的不是 `.venv\Scripts\python.exe`，改成它。
 
 ### 运行
 
@@ -112,6 +152,23 @@ python app.py
 浏览器打开 <http://127.0.0.1:5001>，首次使用需注册账号（本地库，不联网）。
 
 未配置模型时系统以关键词模式运行，界面会明确标注，功能不受影响。
+
+### 常见错误
+
+**`ModuleNotFoundError: No module named 'flask'`**
+
+当前运行 `app.py` 的 Python 没装 Flask。不要只关掉报错，按下面任一方式处理：
+
+```bash
+# 方式一：在 IDEA 的 Terminal 里，用当前解释器安装
+python -m pip install flask
+
+# 方式二：确认虚拟环境已激活，再装依赖
+.venv\Scripts\activate
+python -m pip install -r requirements.txt
+```
+
+如果 `pip install flask` 后仍然报错，说明安装到了另一个 Python。检查 IDEA 的 `Python Interpreter` 和 Run Configuration，确保都指向 `.venv\Scripts\python.exe`。
 
 ---
 
@@ -124,6 +181,10 @@ python app.py
 复制 `.env.example` 为 `.env`，按需填写；应用启动时会自动读取，系统里已存在的环境变量优先。
 
 ```bash
+# Windows PowerShell / CMD
+copy .env.example .env
+
+# macOS / Linux
 cp .env.example .env
 ```
 
