@@ -1,6 +1,22 @@
 # 必装：Web 框架
 flask>=3.0
 
+# 可选：本地语音识别（SenseVoice-Small，FunASR）
+#
+# 不用手动写在这里——app.py 启动时会自检，缺 funasr / torch / torchaudio
+# 就用当前解释器后台 pip install 补上。
+#
+# 想提前手动装（离线机器、或不想让程序自己装）：
+#    pip install funasr torch torchaudio
+#
+# 想彻底关掉自动安装：设 ASR_AUTO_INSTALL=0，语音会退回浏览器在线识别。
+# 首次识别会自动下载权重到 ~/.cache/modelscope（约 900MB），之后完全离线；
+# 也可以用 python pack_model.py 把权重收进项目 models/ 目录随包分发。
+#
+# funasr
+# torch
+# torchaudio
+
 # 大模型情绪陪护（可选）
 #
 # 只有在 llm_config.json 里把 provider 设为 "anthropic"（使用 Claude）时，
