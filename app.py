@@ -1,8 +1,14 @@
 import datetime
+import importlib.util
 import json
 import os
 import re
 import sqlite3
+import subprocess
+import sys
+import tempfile
+import threading
+import time
 from contextlib import contextmanager
 
 from flask import Flask, jsonify, request, send_from_directory, session
@@ -375,6 +381,209 @@ def ai_settings():
     return jsonify({"ok": True, "settings": public_ai_settings(user[0])})
 
 
+# ---------------- 本地语音依赖自检（缺什么自动装什么） ----------------
+# 目标：别人拿到项目只要 python app.py，缺 funasr/torch 时自动补装；
+# 装不上也不影响文字对话，语音自动退回浏览器在线识别。
+ASR_AUTO_INSTALL = os.environ.get("ASR_AUTO_INSTALL", "1").lower() not in ("0", "false", "no", "off")
+# 顺序有讲究：先 torch，再 torchaudio，最后 funasr（funasr 依赖前两者）。
+_ASR_DEPS_MODULES = (("torch", "torch"), ("torchaudio", "torchaudio"), ("funasr", "funasr"))
+_asr_deps_lock = threading.Lock()
+_ASR_DEPS_STARTED = False
+_asr_deps = {
+    "state": "unknown",  # unknown / present / installing / installed / failed / missing / disabled
+    "missing": [], "message": "", "updatedAt": None, "autoInstall": ASR_AUTO_INSTALL,
+}
+
+
+def asr_deps_missing():
+    """只查包是否存在，不真正导入，调用很快。"""
+    missing = []
+    for module, package in _ASR_DEPS_MODULES:
+        try:
+            found = importlib.util.find_spec(module) is not None
+        except (ImportError, ValueError):
+            found = False
+        if not found:
+            missing.append(package)
+    return missing
+
+
+def asr_deps_state():
+    with _asr_deps_lock:
+        return dict(_asr_deps)
+
+
+def _set_asr_deps(**kwargs):
+    with _asr_deps_lock:
+        _asr_deps.update(kwargs)
+        _asr_deps["updatedAt"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _pip_install(packages):
+    """用当前解释器装包，避免装到另一个 Python 上。"""
+    cmd = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", *packages]
+    print(f"[ASR] 开始安装缺少的依赖：{' '.join(packages)}")
+    print(f"[ASR] 执行：{' '.join(cmd)}")
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace")
+    except Exception as exc:  # noqa: BLE001 - 起不了 pip 就是装不上
+        return False, f"无法执行 pip：{exc}"
+    if proc.returncode == 0:
+        return True, "安装成功"
+    tail = ((proc.stderr or "") + (proc.stdout or "")).strip()[-600:]
+    return False, tail or f"pip 退出码 {proc.returncode}"
+
+
+def _asr_deps_worker(missing):
+    ok, detail = _pip_install(missing)
+    if not ok:
+        _set_asr_deps(state="failed",
+                      message=f"自动安装失败，语音继续使用浏览器在线识别。{detail}")
+        print(f"[ASR] 自动安装失败：{detail}")
+        return
+    importlib.invalidate_caches()  # 让当前进程能发现刚装好的包
+    still = asr_deps_missing()
+    if still:
+        _set_asr_deps(state="failed", missing=still,
+                      message="部分依赖仍未就绪：" + " ".join(still))
+        print(f"[ASR] 装完仍缺少：{still}")
+        return
+    _set_asr_deps(state="installed", missing=[], message="依赖已就绪")
+    print("[ASR] 依赖安装完成，本地语音可用")
+
+
+def start_asr_deps_check():
+    """启动时自检；缺依赖就后台补装，不阻塞 Web 服务启动。重复调用无副作用。"""
+    global _ASR_DEPS_STARTED
+    with _asr_deps_lock:
+        if _ASR_DEPS_STARTED:
+            return
+        _ASR_DEPS_STARTED = True
+    if not ASR_ENABLED:
+        _set_asr_deps(state="disabled", message="ASR_MODE 已关闭本地语音")
+        return
+    missing = asr_deps_missing()
+    if not missing:
+        _set_asr_deps(state="present", missing=[], message="")
+        return
+    if not ASR_AUTO_INSTALL:
+        _set_asr_deps(state="missing", missing=missing,
+                      message="缺少本地语音依赖：" + " ".join(missing)
+                              + "（ASR_AUTO_INSTALL=0，未自动安装）")
+        return
+    _set_asr_deps(state="installing", missing=missing,
+                  message="正在后台安装：" + " ".join(missing) + "（首次约几分钟，不影响文字对话）")
+    threading.Thread(target=_asr_deps_worker, args=(missing,), daemon=True).start()
+
+
+def wait_asr_deps(timeout=900):
+    """等依赖状态脱离 installing，预热模型前用。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        state = asr_deps_state()["state"]
+        if state != "installing":
+            return state
+        time.sleep(3)
+    return "timeout"
+
+
+# ---------------- 本地语音识别（SenseVoice-Small，离线推理） ----------------
+# 完全跑在本机，不经过任何在线语音服务。前端把麦克风录音转成 16k 单声道 WAV
+# 传上来，这里落临时文件后交给 sensevoice_asr 识别，识别完就删。
+ASR_MAX_BYTES = int(os.environ.get("ASR_MAX_BYTES", 20 * 1024 * 1024))
+ASR_DEVICE = os.environ.get("ASR_DEVICE", "cpu")
+# ASR_MODE=off 可以整体关掉，前端会自动退回浏览器在线识别。
+ASR_ENABLED = os.environ.get("ASR_MODE", "local").lower() not in ("off", "0", "false", "no")
+# SenseVoice 是 CPU 推理，几个请求同时进来只会互相抢核心，串行更稳。
+_asr_lock = threading.Lock()
+
+
+def _asr_module():
+    """按需导入：没装 funasr 时不影响应用启动，只是语音功能不可用。"""
+    import sensevoice_asr
+    return sensevoice_asr
+
+
+@app.route("/api/asr/status")
+def asr_status():
+    require_user()
+    deps = asr_deps_state()
+    info = {"engine": "SenseVoice-Small", "available": False, "loaded": False,
+            "cached": False, "source": "unknown", "device": ASR_DEVICE,
+            "reason": "", "deps": deps}
+    if not ASR_ENABLED:
+        info["reason"] = "已通过环境变量 ASR_MODE 关闭"
+        return jsonify({"ok": True, "asr": info})
+    try:
+        module = _asr_module()
+    except Exception as exc:  # noqa: BLE001 - 缺依赖时给出可读原因
+        if deps["state"] == "installing":
+            info["reason"] = "正在后台安装本地语音依赖，装好后刷新页面即可使用"
+        else:
+            info["reason"] = deps.get("message") or f"本地识别依赖未就绪（{exc}）"
+        return jsonify({"ok": True, "asr": info})
+    info["available"] = True
+    info["cached"] = bool(module.local_weight_path())
+    info["source"] = module.model_source()
+    info["loaded"] = module.is_loaded()
+    if info["source"] == "cache":
+        info["reason"] = "使用本机 modelscope 缓存，权重未随项目打包"
+    elif info["source"] == "download":
+        info["reason"] = "未发现本地权重，首次识别会联网下载约 900MB"
+    return jsonify({"ok": True, "asr": info})
+
+
+@app.route("/api/asr", methods=["POST"])
+def asr_transcribe():
+    require_user()
+    if not ASR_ENABLED:
+        return jsonify({"ok": False, "error": "本地语音识别已关闭"}), 503
+
+    upload = request.files.get("audio")
+    if upload is None:
+        return jsonify({"ok": False, "error": "没有收到音频数据"}), 400
+    data = upload.read(ASR_MAX_BYTES + 1)
+    if len(data) > ASR_MAX_BYTES:
+        return jsonify({"ok": False, "error": "录音文件过大，请控制在 20MB 以内"}), 413
+    if len(data) < 3200:  # 16k/16bit 单声道，约 0.1 秒
+        return jsonify({"ok": False, "error": "录音太短，请说完再停止"}), 400
+
+    try:
+        module = _asr_module()
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"ok": False, "error": f"本地识别不可用：{exc}"}), 503
+
+    language = str(request.form.get("language") or "auto").strip()
+    if language not in module.LANGUAGES:
+        language = "auto"
+
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            tmp.write(data)
+            tmp_path = tmp.name
+        with _asr_lock:
+            result = module.transcribe(tmp_path, language=language, device=ASR_DEVICE)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[ASR] 识别失败：{type(exc).__name__}: {exc}")
+        return jsonify({"ok": False, "error": f"识别失败：{exc}"}), 500
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+    return jsonify({
+        "ok": True, "engine": "sensevoice-local",
+        "text": result["text"], "language": result["language"],
+        "languageText": result["language_text"], "emotion": result["emotion"],
+        "emotionText": result["emotion_text"], "events": result["events"],
+        "eventsText": result["events_text"], "elapsed": result["elapsed"],
+    })
+
+
 def conversation_dict(row):
     return {
         "id": row["id"], "title": row["title"], "createdAt": row["created_at"],
@@ -636,6 +845,35 @@ def static_files(filename):
     return send_from_directory(BASE_DIR, filename)
 
 
+# 导入即自检：这样 python app.py、flask run、gunicorn 都能触发自动补装。
+start_asr_deps_check()
+
+
 if __name__ == "__main__":
+    deps_now = asr_deps_state()
+    if deps_now["state"] == "installing":
+        print(f"[ASR] {deps_now['message']}")
+
+    # 首次识别要加载 900MB 权重（约十几秒）。依赖与权重都就位时后台先热起来，
+    # 用户第一次点语音就不用干等；缺依赖或没权重就跳过，不在启动时被动联网下载。
+    if ASR_ENABLED and os.environ.get("ASR_PRELOAD", "1").lower() not in ("0", "false", "no", "off"):
+        def _warmup():
+            state = wait_asr_deps()
+            if state not in ("present", "installed"):
+                print(f"[ASR] 跳过预热（依赖状态：{state}）")
+                return
+            try:
+                module = _asr_module()
+                if module.model_source() == "download":
+                    print("[ASR] 本地没有模型权重，跳过预热（首次识别时会自动下载）")
+                    return
+                with _asr_lock:
+                    module.get_model(device=ASR_DEVICE)
+                print("[ASR] 本地语音模型已就绪")
+            except Exception as exc:  # noqa: BLE001 - 预热失败不影响其他功能
+                print(f"[ASR] 预热失败，不影响文字对话：{exc}")
+
+        threading.Thread(target=_warmup, daemon=True).start()
+
     print("情绪星球 · 纯软件 AI Agent：http://127.0.0.1:5001")
     app.run(host=os.environ.get("HOST", "127.0.0.1"), port=int(os.environ.get("PORT", "5001")), debug=False)
