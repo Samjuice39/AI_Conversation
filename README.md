@@ -111,6 +111,7 @@
 
 ```text
 flask>=3.0
+vosk>=0.3.45
 ```
 
 ### 命令行安装
@@ -159,7 +160,7 @@ python -c "import flask; print(flask.__version__)"
 python app.py
 ```
 
-浏览器打开 <http://127.0.0.1:5001>，首次使用需注册账号（本地库，不联网）。
+浏览器打开 <http://127.0.0.1:5001>，首次使用需注册账号（本地库，不联网）。中文语音模型已放在 `models/vosk-model-small-cn-0.22`（Vosk 官方发布），首次点击语音输入时会加载模型，之后的录音会复用同一个模型实例。Windows 下 Vosk 原生库无法直接读取中文路径，程序会首次自动把模型复制到系统临时目录的英文路径缓存，因此首次识别会多等几秒。
 
 首次启动如果缺本地语音依赖，终端会打印安装进度，网页此时可以先正常用文字；装好后刷新页面即可用本地识别。
 
@@ -299,6 +300,8 @@ python app.py
 │   └── asr_example_zh.wav    语音识别自测样例（16kHz 单声道）
 ├── emotion-planet.html       主界面：对话 + 情绪可视化 + 统计
 ├── login.html                登录/注册页
+├── speech_recognizer.py      Vosk 离线语音转写与音频格式校验
+├── models/                   中文离线语音模型
 ├── requirements.txt          依赖清单
 └── emotion_planet.db         SQLite 数据库（运行时生成，已 gitignore）
 ```
