@@ -3,7 +3,7 @@ import json
 import re
 
 import rag_retriever
-from llm_client import describe, request_completion
+from llm_client import chat_completion_stream, describe, request_completion
 
 LABELS = {0: "平静", 1: "焦虑", 2: "愉悦", 3: "疲惫", 4: "低落", 5: "烦躁"}
 CRISIS_PATTERN = re.compile(r"自杀|不想活|结束生命|伤害自己|自残|轻生")
@@ -313,15 +313,11 @@ def _retrieve_knowledge(text, top_k=3):
         return []
 
 
-def analyze(context, facts=None, llm_config=None):
+def _prepare(context, facts):
+    """构建一次模型请求所需的全部素材；analyze 与 analyze_stream 共用，避免两套 prompt 漂移。"""
     text = context["text"]
     persona = normalize_persona(context.get("persona"))
     spec = get_persona_spec(persona, context.get("customPersona"))
-    local_crisis = bool(CRISIS_PATTERN.search(text))
-    if not describe(llm_config or {"provider": "none"}).get("enabled"):
-        result = _fallback(text)
-        result.update({"source": "fallback", "model": None, "persona": persona})
-        return result
     payload = {
         "当前消息": text,
         "当前人设": spec["label"],
@@ -338,7 +334,7 @@ def analyze(context, facts=None, llm_config=None):
     if context.get("userProfile"):
         payload["用户偏好"] = context["userProfile"]
     user_prompt = json.dumps(payload, ensure_ascii=False)
-    pattern, sample_input, sample_response, sample_code, sample_suggestion, sample_followup = next(
+    _, sample_input, sample_response, sample_code, sample_suggestion, sample_followup = next(
         (item for item in spec["examples"] if re.search(item[0], text)),
         spec["examples"][-1],
     )
@@ -353,6 +349,26 @@ def analyze(context, facts=None, llm_config=None):
         + sample_input + "\n示例输出：" + json.dumps(sample, ensure_ascii=False)
         + "\n现在分析下面的实际输入，只输出完整 JSON：\n"
     )
+    return {
+        "text": text,
+        "persona": persona,
+        "spec": spec,
+        "example": example,
+        "user_prompt": user_prompt,
+        "local_crisis": bool(CRISIS_PATTERN.search(text)),
+    }
+
+
+def analyze(context, facts=None, llm_config=None):
+    text = context["text"]
+    persona = normalize_persona(context.get("persona"))
+    if not describe(llm_config or {"provider": "none"}).get("enabled"):
+        result = _fallback(text)
+        result.update({"source": "fallback", "model": None, "persona": persona})
+        return result
+    prepared = _prepare(context, facts)
+    spec, example, user_prompt = prepared["spec"], prepared["example"], prepared["user_prompt"]
+    local_crisis = prepared["local_crisis"]
     # 部分网关不处理 system 角色，合并到 user 更稳。
     last_error = None
     for attempt in range(2):
@@ -376,6 +392,113 @@ def analyze(context, facts=None, llm_config=None):
     if llm_config:
         result["summary"] = "本次大模型接口未返回有效结果，已临时使用本地规则模型。请在「AI 设置」中检查接口地址、密钥和模型名称。"
     return result
+
+
+_JSON_UNESCAPE = {'"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f",
+                  "n": "\n", "r": "\r", "t": "\t"}
+
+# 流式输出时让 response 排在最前，用户不用等后面的字段生成完才看到正文。
+_STREAM_ORDER_HINT = (
+    "\n本次要求流式输出：JSON 的第一个字段必须是 response，先写正文，"
+    "再写 emotionCode、intensity、confidence、summary、evidence、triggers、"
+    "suggestion、followUpQuestion、riskLevel。字段集合和取值规则不变。\n"
+)
+
+
+def _partial_response(raw):
+    """从未完成的 JSON 文本里尽力取出 response 字段的当前值。
+
+    模型还在吐字时 JSON 不完整，不能直接 json.loads；这里按字符扫描，
+    遇到未转义的引号即认为该字段已结束。
+    """
+    match = re.search(r'"response"\s*:\s*"', raw)
+    if not match:
+        return ""
+    out = []
+    i = match.end()
+    while i < len(raw):
+        ch = raw[i]
+        if ch == '"':
+            break
+        if ch == "\\":
+            if i + 1 >= len(raw):
+                break
+            nxt = raw[i + 1]
+            if nxt == "u":
+                if i + 6 > len(raw):
+                    break
+                try:
+                    out.append(chr(int(raw[i + 2:i + 6], 16)))
+                except ValueError:
+                    pass
+                i += 6
+                continue
+            out.append(_JSON_UNESCAPE.get(nxt, nxt))
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    # 部分网关把 emoji 转义成两个 \uXXXX 代理对，单独解码会出现半个字符。
+    return "".join(out).encode("utf-16", "surrogatepass").decode("utf-16", "surrogatepass")
+
+
+def analyze_stream(context, facts=None, llm_config=None):
+    """流式分析：产出 ("token", 文本增量) 与 ("result", 最终结果)。
+
+    流式失败（网络错误、模型不支持 stream、JSON 不合法）时退回一次性请求，
+    仍然只在最后产出 result，不让前端拿到半截结果。
+    """
+    text = context["text"]
+    persona = normalize_persona(context.get("persona"))
+    if not describe(llm_config or {"provider": "none"}).get("enabled"):
+        result = _fallback(text)
+        result.update({"source": "fallback", "model": None, "persona": persona})
+        yield ("result", result)
+        return
+
+    prepared = _prepare(context, facts)
+    spec, example, user_prompt = prepared["spec"], prepared["example"], prepared["user_prompt"]
+    local_crisis = prepared["local_crisis"]
+    prompt = spec["system"] + _STREAM_ORDER_HINT + example + user_prompt
+
+    buffer = []
+    emitted = 0
+    streamed_ok = False
+    try:
+        for piece in chat_completion_stream(
+            [{"role": "user", "content": prompt}], json_mode=True, config=llm_config
+        ):
+            buffer.append(piece)
+            partial = _partial_response("".join(buffer))
+            if len(partial) > emitted:
+                yield ("token", partial[emitted:])
+                emitted = len(partial)
+                streamed_ok = True
+    except Exception as exc:  # noqa: BLE001 - 流式失败要能退回一次性请求
+        print(f"[AI] 流式输出失败，退回一次性请求：{type(exc).__name__}: {exc}")
+        buffer = []
+
+    if buffer:
+        raw = "".join(buffer)
+        try:
+            result = _validate(_extract_json(raw), local_crisis)
+        except ValueError as exc:
+            print(f"[AI] 流式结果校验失败，退回一次性请求：{exc}")
+        else:
+            model = None
+            try:
+                model = describe(llm_config).get("model")
+            except Exception:  # noqa: BLE001 - 拿不到模型名不影响结果
+                pass
+            result.update({"source": "llm", "model": model, "persona": persona})
+            yield ("result", result)
+            return
+
+    result = analyze(context, facts, llm_config=llm_config)
+    if streamed_ok and result.get("source") != "llm":
+        # 已经给前端吐过字了，最终却降级：明确告知，避免前端把半截文字当成完整回应。
+        result["streamTruncated"] = True
+    yield ("result", result)
 
 
 def generate_insights(payload, llm_config=None):

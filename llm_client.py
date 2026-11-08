@@ -183,3 +183,72 @@ def chat_completion(messages, tools=None, temperature=0.3, max_tokens=1200,
     except (KeyError, IndexError, TypeError):
         raise RuntimeError("返回格式不符合预期")
     return message, active
+
+
+def chat_completion_stream(messages, temperature=0.3, max_tokens=1200,
+                           json_mode=False, config=None):
+    """流式调用，逐块产出文本增量。仅支持 OpenAI 兼容接口。
+
+    调用方负责累积文本并在流结束后做结构化校验；本函数不吞异常，
+    网络或接口错误直接抛出，由上层决定降级方式。
+    """
+    active = _resolve(config or {})
+    if not active:
+        raise RuntimeError("尚未配置大模型，请先在页面的「AI 设置」中填写接口")
+    if active["provider"] == "anthropic":
+        raise RuntimeError("流式输出仅支持 OpenAI 兼容接口，请切换 provider")
+
+    url = active["baseUrl"].rstrip("/") + "/chat/completions"
+    payload = {
+        "model": active["model"],
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "stream": True,
+    }
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
+
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=body, method="POST", headers={
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+        "Authorization": f"Bearer {active['apiKey']}",
+    })
+    try:
+        resp = urllib.request.urlopen(req, timeout=active["timeout"])
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:
+            detail = e.read().decode("utf-8", "ignore")[:200]
+        except Exception:
+            pass
+        raise RuntimeError(f"接口返回 {e.code} {detail}".strip())
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"网络不通: {e.reason}")
+
+    try:
+        for raw in resp:
+            line = raw.decode("utf-8", "ignore").strip()
+            if not line or not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data)
+            except ValueError:
+                continue
+            choices = chunk.get("choices") or []
+            if not choices:
+                continue
+            choice = choices[0] or {}
+            delta = choice.get("delta") or {}
+            piece = delta.get("content")
+            if piece is None:
+                # 少数网关在流式响应里仍返回完整 message，兼容一下。
+                piece = (choice.get("message") or {}).get("content")
+            if piece:
+                yield piece
+    finally:
+        resp.close()

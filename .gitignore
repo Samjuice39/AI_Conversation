@@ -15,6 +15,7 @@ __pycache__/
 
 # 本地私有配置
 .env
+.secret_key
 llm_config.json
 
 # IDE 与系统文件

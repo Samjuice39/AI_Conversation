@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 import re
+import secrets
 import sqlite3
 import subprocess
 import sys
@@ -11,12 +12,13 @@ import threading
 import time
 from contextlib import contextmanager
 
-from flask import Flask, jsonify, request, send_from_directory, session
+from flask import (Flask, Response, jsonify, request, send_from_directory,
+                   session, stream_with_context)
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import agent_workflow
-from ai_coach import (CRISIS_PATTERN, analyze as ai_analyze, generate_insights,
-                      validate_result)
+from ai_coach import (CRISIS_PATTERN, analyze as ai_analyze, analyze_stream,
+                      generate_insights, validate_result)
 from llm_client import describe as llm_describe
 from urllib.parse import urlparse
 from user_profile import (build_profile, clean_preferred_name, format_for_prompt,
@@ -73,7 +75,36 @@ def run_analysis(text, context, sleep, history, user_id, persona="gentle",
         result["source"] = "agent"
     return result
 
-app.secret_key = os.environ.get("EMOTION_SECRET_KEY", "emotion-planet-pure-web-dev-key")
+def _load_secret_key():
+    """优先用环境变量；否则读本地 .secret_key，没有就生成并落盘。
+
+    不设固定兜底值：硬编码密钥意味着任何人拿到源码就能伪造会话。
+    """
+    env_key = os.environ.get("EMOTION_SECRET_KEY", "").strip()
+    if env_key:
+        return env_key
+    key_path = os.path.join(BASE_DIR, ".secret_key")
+    if os.path.exists(key_path):
+        try:
+            with open(key_path, "r", encoding="utf-8") as fh:
+                stored = fh.read().strip()
+        except OSError as exc:
+            print(f"[Auth] 读取 .secret_key 失败：{exc}")
+            stored = ""
+        if stored:
+            return stored
+    key = secrets.token_hex(32)
+    try:
+        with open(key_path, "w", encoding="utf-8") as fh:
+            fh.write(key)
+        os.chmod(key_path, 0o600)
+        print("[Auth] 已生成随机会话密钥并写入 .secret_key")
+    except OSError as exc:
+        print(f"[Auth] 无法写入 .secret_key，本次运行使用临时密钥（重启后需重新登录）：{exc}")
+    return key
+
+
+app.secret_key = _load_secret_key()
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax")
 
 CONTEXTS = {"study", "family", "peers", "sensory", "daily", "other"}
@@ -152,6 +183,8 @@ def init_db():
             conn.execute("ALTER TABLE checkins ADD COLUMN conversation_id INTEGER")
         if "persona" not in columns:
             conn.execute("ALTER TABLE checkins ADD COLUMN persona TEXT")
+        if "trace_json" not in columns:
+            conn.execute("ALTER TABLE checkins ADD COLUMN trace_json TEXT")
         user_columns = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
         if "preferred_name" not in user_columns:
             conn.execute("ALTER TABLE users ADD COLUMN preferred_name TEXT")
@@ -210,6 +243,7 @@ def checkin_dict(row):
         "summary": row["summary"], "response": row["response"],
         "suggestion": row["suggestion"], "followUpQuestion": row["follow_up"],
         "persona": row["persona"],
+        "trace": json.loads(row["trace_json"] or "[]"),
         "triggers": json.loads(row["triggers_json"] or "[]"),
         "riskLevel": row["risk_level"], "source": row["source"], "model": row["model"],
         "feedback": row["feedback"], "feedbackAt": row["feedback_at"],
@@ -621,10 +655,8 @@ def conversation_messages(conversation_id):
     return jsonify({"ok": True, "records": [checkin_dict(row) for row in rows]})
 
 
-@app.route("/api/chat", methods=["POST"])
-def chat():
-    user = require_user()
-    body = request.get_json(silent=True) or {}
+def _parse_chat_request(body):
+    """校验并归一化对话请求体；失败返回 (None, (payload, status))。"""
     text = str(body.get("text") or "").strip()
     context = str(body.get("context") or "daily")
     persona = str(body.get("persona") or "gentle")
@@ -632,47 +664,62 @@ def chat():
     preferred_name = clean_preferred_name(body.get("preferredName"))
     sleep = body.get("sleepQuality")
     if not 2 <= len(text) <= 1000:
-        return jsonify({"ok": False, "error": "请输入 2～1000 字"}), 400
+        return None, ({"ok": False, "error": "请输入 2～1000 字"}, 400)
     if context not in CONTEXTS:
-        return jsonify({"ok": False, "error": "未知情境"}), 400
+        return None, ({"ok": False, "error": "未知情境"}, 400)
     if persona not in PERSONAS:
-        return jsonify({"ok": False, "error": "未知人设"}), 400
+        return None, ({"ok": False, "error": "未知人设"}, 400)
     if sleep not in (None, "", 1, 2, 3, 4, 5):
-        return jsonify({"ok": False, "error": "睡眠质量应为 1～5"}), 400
-    sleep = int(sleep) if sleep not in (None, "") else None
+        return None, ({"ok": False, "error": "睡眠质量应为 1～5"}, 400)
+    return {
+        "text": text, "context": context, "persona": persona,
+        "customPersona": custom_persona, "preferredName": preferred_name,
+        "sleep": int(sleep) if sleep not in (None, "") else None,
+        "rawConversationId": body.get("conversationId"),
+    }, None
+
+
+def _prepare_chat_context(user_id, params):
+    """解析话题、更新称呼并读取近期历史，返回 (conversation_id, history, preferred_name)。
+
+    话题编号非法抛 ValueError（400），话题不存在抛 LookupError（404）。
+    """
+    text = params["text"]
+    preferred_name = params["preferredName"]
+    raw_conversation_id = params["rawConversationId"]
     with get_db() as conn:
-        user_row = conn.execute("SELECT preferred_name FROM users WHERE id = ?", (user[0],)).fetchone()
+        user_row = conn.execute("SELECT preferred_name FROM users WHERE id = ?", (user_id,)).fetchone()
         stored_name = user_row["preferred_name"] if user_row and user_row["preferred_name"] else ""
         if preferred_name:
             if preferred_name != stored_name:
-                conn.execute("UPDATE users SET preferred_name = ? WHERE id = ?", (preferred_name, user[0]))
+                conn.execute("UPDATE users SET preferred_name = ? WHERE id = ?", (preferred_name, user_id))
         elif not stored_name:
             inferred_name = infer_nickname(text)
             if inferred_name:
                 preferred_name = inferred_name
-                conn.execute("UPDATE users SET preferred_name = ? WHERE id = ?", (inferred_name, user[0]))
+                conn.execute("UPDATE users SET preferred_name = ? WHERE id = ?", (inferred_name, user_id))
         else:
             preferred_name = stored_name
-        raw_conversation_id = body.get("conversationId")
         if raw_conversation_id not in (None, ""):
             try:
                 conversation_id = int(raw_conversation_id)
             except (TypeError, ValueError):
-                return jsonify({"ok": False, "error": "话题编号无效"}), 400
+                raise ValueError("话题编号无效")
             conversation = conn.execute(
-                "SELECT * FROM conversations WHERE id = ? AND user_id = ?", (conversation_id, user[0])
+                "SELECT * FROM conversations WHERE id = ? AND user_id = ?", (conversation_id, user_id)
             ).fetchone()
             if not conversation:
-                return jsonify({"ok": False, "error": "话题不存在"}), 404
+                raise LookupError("话题不存在")
         else:
             conversation = conn.execute(
-                "SELECT * FROM conversations WHERE user_id = ? ORDER BY updated_at DESC, id DESC LIMIT 1", (user[0],)
+                "SELECT * FROM conversations WHERE user_id = ? ORDER BY updated_at DESC, id DESC LIMIT 1",
+                (user_id,)
             ).fetchone()
             if not conversation:
                 cursor = conn.execute(
                     "INSERT INTO conversations (user_id, title, created_at, updated_at) "
                     "VALUES (?, ?, datetime('now','localtime'), datetime('now','localtime'))",
-                    (user[0], text.replace("\n", " ")[:20]),
+                    (user_id, text.replace("\n", " ")[:20]),
                 )
                 conversation_id = cursor.lastrowid
             else:
@@ -685,29 +732,30 @@ def chat():
         "用户": row["input_text"], "AI": row["response"],
         "情绪": row["emotion"], "建议反馈": row["feedback"] or "未反馈",
     } for row in reversed(rows)]
-    try:
-        result = run_analysis(text, context, sleep, history, user[0], persona,
-                              custom_persona, preferred_name)
-    except Exception as exc:
-        print(f"[AI] 分析失败：{exc}")
-        return jsonify({"ok": False, "error": f"AI 分析失败：{exc}"}), 503
+    return conversation_id, history, preferred_name
+
+
+def _save_checkin(user_id, conversation_id, params, result):
+    """写入一条记录并返回前端要的格式；话题已被删除时返回 None。"""
+    text = params["text"]
     with get_db() as conn:
         conversation = conn.execute(
-            "SELECT id FROM conversations WHERE id = ? AND user_id = ?", (conversation_id, user[0])
+            "SELECT id FROM conversations WHERE id = ? AND user_id = ?", (conversation_id, user_id)
         ).fetchone()
         if not conversation:
-            return jsonify({"ok": False, "error": "话题已被删除，本次回复未保存"}), 404
+            return None
         cursor = conn.execute("""
             INSERT INTO checkins (
                 user_id, conversation_id, created_at, input_text, context, sleep_quality, emotion,
                 emotion_code, intensity, confidence, summary, response, suggestion,
-                follow_up, triggers_json, risk_level, source, model, persona
-            ) VALUES (?, ?, datetime('now','localtime'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (user[0], conversation_id, text, context, sleep, result["emotion"], result["emotionCode"],
-              result["intensity"], result["confidence"], result["summary"], result["response"],
-              result["suggestion"], result["followUpQuestion"], json.dumps(result["triggers"], ensure_ascii=False),
-              result["riskLevel"], result["source"], result.get("model"),
-              result.get("persona") or persona))
+                follow_up, triggers_json, risk_level, source, model, persona, trace_json
+            ) VALUES (?, ?, datetime('now','localtime'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (user_id, conversation_id, text, params["context"], params["sleep"], result["emotion"],
+              result["emotionCode"], result["intensity"], result["confidence"], result["summary"],
+              result["response"], result["suggestion"], result["followUpQuestion"],
+              json.dumps(result["triggers"], ensure_ascii=False), result["riskLevel"],
+              result["source"], result.get("model"), result.get("persona") or params["persona"],
+              json.dumps(result.get("trace") or [], ensure_ascii=False)))
         checkin_id = cursor.lastrowid
         conn.execute(
             "UPDATE conversations SET title = CASE WHEN title = '新话题' THEN ? ELSE title END, "
@@ -715,10 +763,111 @@ def chat():
             (text.replace("\n", " ")[:20], conversation_id),
         )
         row = conn.execute("SELECT * FROM checkins WHERE id = ?", (checkin_id,)).fetchone()
-    result_payload = checkin_dict(row)
-    result_payload["personalization"] = result.get("personalization")
-    return jsonify({"ok": True, "result": result_payload})
+    payload = checkin_dict(row)
+    payload["personalization"] = result.get("personalization")
+    return payload
 
+
+def _chat_params_or_error():
+    """解析请求并准备话题；出错时返回 (None, None, None, (payload, status))。"""
+    user = require_user()
+    body = request.get_json(silent=True) or {}
+    params, error = _parse_chat_request(body)
+    if error:
+        return None, None, None, error
+    try:
+        conversation_id, history, preferred_name = _prepare_chat_context(user[0], params)
+    except ValueError as exc:
+        return None, None, None, ({"ok": False, "error": str(exc)}, 400)
+    except LookupError as exc:
+        return None, None, None, ({"ok": False, "error": str(exc)}, 404)
+    return user, params, (conversation_id, history, preferred_name), None
+
+
+@app.route("/api/chat", methods=["POST"])
+def chat():
+    """一次性返回完整结果；流式端点不可用时的兜底路径。"""
+    user, params, prepared, error = _chat_params_or_error()
+    if error:
+        return jsonify(error[0]), error[1]
+    conversation_id, history, preferred_name = prepared
+    try:
+        result = run_analysis(params["text"], params["context"], params["sleep"], history,
+                              user[0], params["persona"], params["customPersona"], preferred_name)
+    except Exception as exc:
+        print(f"[AI] 分析失败：{exc}")
+        return jsonify({"ok": False, "error": f"AI 分析失败：{exc}"}), 503
+    payload = _save_checkin(user[0], conversation_id, params, result)
+    if payload is None:
+        return jsonify({"ok": False, "error": "话题已被删除，本次回复未保存"}), 404
+    return jsonify({"ok": True, "result": payload})
+
+
+@app.route("/api/chat/stream", methods=["POST"])
+def chat_stream():
+    """SSE 流式对话：status / trace / token / final / error 五类事件。"""
+    user, params, prepared, error = _chat_params_or_error()
+    if error:
+        return jsonify(error[0]), error[1]
+    conversation_id, history, preferred_name = prepared
+    user_id = user[0]
+
+    def event(payload):
+        return "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
+
+    def generate():
+        try:
+            payload = {
+                "text": params["text"], "taskContext": params["context"],
+                "persona": params["persona"], "customPersona": params["customPersona"],
+                "preferredName": preferred_name, "sleepQuality": params["sleep"],
+                "history": history,
+            }
+            profile = build_profile(DB_PATH, user_id)
+            profile_hint = format_for_prompt(profile)
+            if profile_hint:
+                payload["userProfile"] = profile_hint
+            llm_config = get_user_llm_config(user_id)
+
+            facts, trace = [], []
+            if AGENT_MODE and llm_config:
+                yield event({"type": "status", "stage": "agent", "message": "正在查看近期记录"})
+                try:
+                    info = agent_workflow.collect(payload, DB_PATH, user_id, llm_config=llm_config)
+                    facts = info.get("facts") or []
+                    trace = info.get("trace") or []
+                except Exception as exc:  # noqa: BLE001 - 取数失败退回单轮
+                    print(f"[Agent] 信息收集失败，按单轮处理：{exc}")
+                for step in trace:
+                    yield event({"type": "trace", "step": step})
+
+            yield event({"type": "status", "stage": "generate", "message": "正在组织回应"})
+            result = None
+            for kind, value in analyze_stream(payload, facts, llm_config=llm_config):
+                if kind == "token":
+                    yield event({"type": "token", "text": value})
+                else:
+                    result = value
+            if result is None:
+                raise RuntimeError("模型没有返回结果")
+
+            result["trace"] = trace
+            result["personalization"] = profile
+            if facts:
+                result["source"] = "agent"
+            saved = _save_checkin(user_id, conversation_id, params, result)
+            if saved is None:
+                yield event({"type": "error", "message": "话题已被删除，本次回复未保存"})
+                return
+            yield event({"type": "final", "result": saved})
+        except Exception as exc:  # noqa: BLE001 - 响应已开始，只能以事件形式报错
+            print(f"[AI] 流式对话失败：{type(exc).__name__}: {exc}")
+            yield event({"type": "error", "message": f"AI 分析失败：{exc}"})
+
+    return Response(stream_with_context(generate()), mimetype="text/event-stream", headers={
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+    })
 
 @app.route("/api/checkins/<int:checkin_id>/feedback", methods=["POST"])
 def feedback(checkin_id):

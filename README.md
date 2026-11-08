@@ -216,10 +216,17 @@ python -m pip install -r requirements.txt
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
+| `EMOTION_SECRET_KEY` | 自动生成 | 会话签名密钥。留空时首次启动生成随机值并写入 `.secret_key`（已 gitignore），重启后登录状态不失效 |
+| `HOST` | `127.0.0.1` | 监听地址，部署到服务器时改 `0.0.0.0` |
+| `PORT` | `5001` | 监听端口 |
+| `AGENT_MODE` | `1` | 设为 `0` 关闭 Agent 取数，退回单轮分析，用于 A/B 对比 |
 | `ASR_MODE` | `local` | 设为 `off` 关闭本地识别，语音退回浏览器在线识别 |
 | `ASR_AUTO_INSTALL` | `1` | 设为 `0` 关闭自动安装（离线机器、内网环境建议关掉） |
 | `ASR_DEVICE` | `cpu` | 有 CUDA 时可设为 `cuda:0` |
 | `ASR_MAX_BYTES` | `20971520` | 单次上传上限（字节），对应约 10 分钟 16kHz WAV |
+| `ASR_PRELOAD` | `1` | 设为 `0` 关闭启动时的模型预热 |
+
+完整模板见 `.env.example`，复制为 `.env` 后生效；`.env` 不进版本库，已有的系统环境变量优先。
 
 自动安装的判断依据是包能否 `import`，安装进度和失败原因通过 `GET /api/asr/status` 的 `deps` 字段暴露（`state` 依次可能是 `present` / `installing` / `installed` / `failed` / `disabled`）。
 
@@ -269,6 +276,7 @@ python app.py
 | GET | `/api/auth/me` | 当前账号与称呼 |
 | DELETE | `/api/auth/account` | 注销账号，需验证密码 |
 | POST | `/api/chat` | 对话主接口：入参文本 / 情境 / 人设，返回结构化情绪结果 |
+| POST | `/api/chat/stream` | 同一份入参的 SSE 流式版本，逐字返回 `response` |
 | GET · POST | `/api/conversations` | 话题列表 / 新建话题 |
 | GET | `/api/conversations/<id>/messages` | 话题内全部记录 |
 | DELETE | `/api/conversations/<id>` | 删除话题及其记录 |
@@ -280,6 +288,26 @@ python app.py
 | GET | `/api/ai/status` | 当前使用的模型来源 |
 | GET | `/api/asr/status` | 本地语音状态：依赖、权重来源、是否已加载 |
 | POST | `/api/asr` | 语音识别：表单 `audio`（16kHz WAV）+ `language` |
+
+### 流式对话 `/api/chat/stream`
+
+前端默认走这个接口。响应类型是 `text/event-stream`，每个事件是一行 `data: <JSON>`，五类：
+
+| 事件 | 载荷 | 说明 |
+|---|---|---|
+| `status` | `stage`、`message` | 阶段提示：`agent` 表示正在查历史，`generate` 表示正在组织回应 |
+| `trace` | `step` | Agent 的每一步工具调用，前端折叠成「执行轨迹」 |
+| `token` | `text` | `response` 字段的增量文本，前端直接追加渲染 |
+| `final` | `result` | 完整结构化结果（与 `/api/chat` 的 `result` 一致），此时记录已落库 |
+| `error` | `message` | 已开始响应后才出现的错误，前端把已收到的文字和错误一起显示 |
+
+模型把 `response` 写在 JSON 最前面，后端边收边解析，所以用户先看到正文，`emotionCode`、`suggestion` 等字段随后补齐。流式请求失败（网关不支持 `stream`、JSON 不合法）会自动退回一次性的 `/api/chat` 逻辑，不会让用户拿到半截结果。
+
+```bash
+curl -N -b cookie.txt -X POST http://127.0.0.1:5001/api/chat/stream \
+  -H "Content-Type: application/json" \
+  -d '{"text":"最近总是睡不好","context":"daily"}'
+```
 
 ---
 
@@ -304,6 +332,7 @@ python app.py
 ├── emotion-planet.html       主界面：对话 + 情绪可视化 + 统计
 ├── login.html                登录/注册页
 ├── requirements.txt          依赖清单
+├── .env.example              环境变量模板（复制为 .env 生效）
 └── emotion_planet.db         SQLite 数据库（运行时生成，已 gitignore）
 ```
 
@@ -484,6 +513,9 @@ python app.py
 | 未配置模型 | 关键词分类，界面标注「本地演示 · 非 AI」，置信度固定 0.3 |
 | 模型超时 / 网络错误 | 同上，并在服务端日志记录原因 |
 | 连续两次输出非法 JSON | 同上 |
+| 流式接口不可用 / 中途失败 | 自动退回一次性请求；已经吐给用户的文字会保留并标注，不冒充完整回应 |
+| 网关不支持 `stream` | 同上，`/api/chat` 保持可用，前端拿到 `error` 事件后提示重试 |
+| 流式连接 90 秒无新数据 | 前端主动断开并提示「AI 响应超时」，输入框保留原文，可直接重发 |
 | 命中危机关键词 | 强制 `riskLevel=high`，返回固定安全建议，不依赖模型 |
 | 知识库缺失 / 检索异常 | 跳过检索，prompt 中不带参考素材，主流程不受影响 |
 | 本地语音依赖缺失 | 后台自动 `pip install`；安装期间语音走浏览器在线识别 |
@@ -532,6 +564,7 @@ python app.py
 | 已完成 | 浏览器语音输入，支持权限与兼容性降级 | 多模态 |
 | 已完成 | 本地离线语音识别 SenseVoice-Small 接入，带在线兜底 | 多模态 |
 | 已完成 | 依赖自检与自动安装、模型权重随包分发 | 交付体验 |
+| 已完成 | SSE 流式输出（边生成边渲染）+ Agent 执行轨迹可视化 | 交互体验 |
 | 计划 | 前端迁移 TypeScript + 组件化 | 工程质量 |
 
 ---
