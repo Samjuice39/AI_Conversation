@@ -1,6 +1,7 @@
 """纯软件 AI 情绪 Agent：多轮对话、情绪理解、长期记忆与干预规划。"""
 import json
 import re
+import time
 
 import rag_retriever
 from llm_client import chat_completion_stream, describe, request_completion
@@ -442,6 +443,21 @@ def _partial_response(raw):
     return "".join(out).encode("utf-16", "surrogatepass").decode("utf-16", "surrogatepass")
 
 
+_TOKEN_CHUNK = 2
+_TOKEN_INTERVAL = 0.05
+
+
+def _paced_tokens(text):
+    """把本地规则模式的固定文案切成小片，按接近模型输出的节奏吐出。
+
+    规则模式没有网络往返，一次 yield 整段会让前端瞬间刷满，看不出流式效果；
+    这里按 2 字一片、50ms 一片的速度发，总时长和真实模型的首包节奏接近。
+    """
+    for i in range(0, len(text), _TOKEN_CHUNK):
+        yield text[i:i + _TOKEN_CHUNK]
+        time.sleep(_TOKEN_INTERVAL)
+
+
 def analyze_stream(context, facts=None, llm_config=None):
     """流式分析：产出 ("token", 文本增量) 与 ("result", 最终结果)。
 
@@ -453,6 +469,10 @@ def analyze_stream(context, facts=None, llm_config=None):
     if not describe(llm_config or {"provider": "none"}).get("enabled"):
         result = _fallback(text)
         result.update({"source": "fallback", "model": None, "persona": persona})
+        # 规则模式也要逐字吐。否则没配 API Key 时前端一个 token 都收不到，
+        # 只能等 final 整段弹出，流式这个卖点等于不存在。
+        for piece in _paced_tokens(result.get("response") or ""):
+            yield ("token", piece)
         yield ("result", result)
         return
 

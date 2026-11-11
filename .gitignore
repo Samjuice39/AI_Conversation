@@ -24,3 +24,6 @@ llm_config.json
 .DS_Store
 Thumbs.db
 *.bak
+
+# 开发过程记录（本地笔记，不属于作品交付物）
+.workbuddy/

@@ -4,6 +4,13 @@
 
 > 一个可本地部署、重视隐私与使用体验的情绪支持项目。当前版本为可运行的原型，AI 能力边界与已知局限在文末明确列出。
 
+![AI 陪伴主界面](docs/screenshots/02-companion.png)
+
+<p align="center">
+  <img src="docs/screenshots/01-login.png" width="49%" alt="登录与注册">
+  <img src="docs/screenshots/03-journey.png" width="49%" alt="情绪轨迹">
+</p>
+
 ---
 
 ## 目录
@@ -322,7 +329,7 @@ curl -N -b cookie.txt -X POST http://127.0.0.1:5001/api/chat/stream \
 ├── user_profile.py           偏好学习：从反馈统计表达偏好，不推断人格
 ├── knowledge/
 │   └── interventions.json    干预策略知识库（40 条，6 类情绪）
-├── docs/                     架构图（drawio 源文件 + 导出的 PNG）
+├── docs/                     架构图（drawio 源文件 + 导出的 PNG）与界面截图
 ├── llm_client.py             模型客户端：多服务商适配
 ├── sensevoice_asr.py         本地语音识别：SenseVoice-Small 离线推理（可选依赖）
 ├── pack_model.py             导出模型权重到 models/，便于随项目分发

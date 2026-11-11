@@ -278,7 +278,7 @@ main{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;padding-top:1
 .pane-journey .insight-grid{flex:1 1 auto;min-height:0;grid-template-rows:minmax(0,1fr)}
 .pane-journey .chart,.pane-journey .history-card{display:flex;flex-direction:column;min-height:0}
 /* .bar 自带 margin:auto auto 0 会把计数数字顶到卡片顶端，撑高图表前先改回居中 */
-.pane-journey .chart .bar{margin:0 auto !important;height:calc((100% - 46px) * var(--h,0));min-height:3px}
+.pane-journey .chart .bar{margin:0 auto !important;height:calc((100% - 46px) * var(--h,0));min-height:3px;max-width:64px !important}
 .pane-journey .chart .bars{flex:1 1 auto;height:auto;min-height:170px}
 .pane-journey .chart .distribution{margin-top:auto !important;padding-top:22px}
 /* 记录多时列表在卡片内滚动，不再把整页顶高 */
