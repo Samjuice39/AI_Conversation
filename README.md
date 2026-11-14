@@ -86,13 +86,13 @@
 |---|---|---|
 | 后端 | Python 3.10+ + Flask 3.x | 轻量，单进程即可运行；已在 3.14 上验证 |
 | 数据库 | SQLite | 零配置，便于本地部署与数据管理 |
-| 前端 | 原生 HTML / CSS / JavaScript | **零第三方依赖**，无 CDN、无构建步骤，首屏无网络等待 |
+| 前端 | TypeScript + esbuild 打包 | 源码按职责拆成 8 个模块，`strict` 模式全量类型检查；**运行时不带任何第三方库**，无 CDN、首屏无网络等待 |
 | 语音输入 | SenseVoice-Small（本地）/ Web Speech API（兜底） | 主路径为本地离线推理，音频不出本机；本地不可用时退回浏览器在线识别 |
 | 语音推理 | FunASR + PyTorch（CPU） | 启动时自检，缺依赖自动补装；不需要 GPU，也不需要 ffmpeg |
 | 模型接入 | OpenAI 兼容协议 / Anthropic | 可切换 DeepSeek、通义、Ollama 等 |
 | 密码存储 | Werkzeug `generate_password_hash` | 加盐哈希，不存明文 |
 
-前端不引入框架是有意为之：页面结构简单，引入 React/Vue 会带来构建链与包体积成本，而本项目更看重下载后即可运行、部署步骤清晰。
+前端不引入 React/Vue 是有意为之：页面结构简单，框架会带来运行时体积与构建链复杂度，而本项目更看重下载后即可运行。但「不引框架」不等于「不工程化」——源码用 TypeScript 编写并开启 `strict`，按职责拆分为 `types / dom / api / state / render / conversations / chat / voice / dialogs / panes / main` 十一个模块，接口响应、SSE 事件、Agent 轨迹都有显式类型；`esbuild` 只做类型擦除与打包，产物是单个无依赖的 IIFE 脚本，已经随仓库提交，因此**运行项目不需要 Node.js**，只有改前端源码时才需要 `npm install` 重新构建。
 
 ---
 
@@ -107,7 +107,7 @@
 - 自动补装（无需手动）：`funasr` / `torch` / `torchaudio`，启动时自检，缺了在后台 `pip install`
 - 本地语音另需模型权重（约 900MB）：首次识别自动下载，或用 `pack_model.py` 随包分发
 - 可选：`anthropic`，只有使用 Claude 时才需要
-- 无需 Node.js、无需 ffmpeg、无需单独安装数据库
+- 无需 Node.js（前端编译产物已提交；只有修改 `web/src` 时才需要 `npm install && npm run build`）、无需 ffmpeg、无需单独安装数据库
 
 ### 依赖清单
 
@@ -337,8 +337,25 @@ curl -N -b cookie.txt -X POST http://127.0.0.1:5001/api/chat/stream \
 ├── models/                   模型权重（可选，由 pack_model.py 生成，不进 Git）
 ├── samples/
 │   └── asr_example_zh.wav    语音识别自测样例（16kHz 单声道）
-├── emotion-planet.html       主界面：对话 + 情绪可视化 + 统计
-├── login.html                登录/注册页
+├── emotion-planet.html       主界面：对话 + 情绪可视化 + 统计（只留结构，脚本外链）
+├── login.html                登录/注册页（同上）
+├── web/                      前端源码：TypeScript + esbuild
+│   ├── src/
+│   │   ├── main.ts           页面装配：绑定导航、输入区、话题抽屉、消息委托
+│   │   ├── types.ts          后端接口契约（Checkin / StreamEvent / Stats 等）
+│   │   ├── api.ts            请求封装：JSON、SSE 分帧解析、语音上传
+│   │   ├── state.ts          跨模块共享状态：记录、话题、当前话题 id
+│   │   ├── render.ts         渲染层：星球卡、消息气泡、轨迹面板、统计图
+│   │   ├── conversations.ts  话题的切换、新建、删除
+│   │   ├── chat.ts           发送流程：占位气泡、逐字渲染、失败回填
+│   │   ├── voice.ts          按住说话：录音、16kHz WAV 编码、本地/在线切换
+│   │   ├── dialogs.ts        阶段回顾、注销账号、AI 设置、人设记忆
+│   │   ├── panes.ts          横向切页
+│   │   ├── dom.ts / constants.ts   DOM 小工具与配色、文案常量
+│   │   └── login.ts          登录页脚本
+│   ├── dist/                 构建产物（已提交，页面直接引用）
+│   ├── tsconfig.json         strict 全开，仅做类型检查
+│   └── package.json          npm run check = 类型检查 + 打包
 ├── requirements.txt          依赖清单
 ├── .env.example              环境变量模板（复制为 .env 生效）
 └── emotion_planet.db         SQLite 数据库（运行时生成，已 gitignore）
@@ -552,7 +569,7 @@ curl -N -b cookie.txt -X POST http://127.0.0.1:5001/api/chat/stream \
 1. **Agent 能力有限**。工具调用只用于「取数」（查历史、查统计、检索策略），取回后仍由单轮调用生成回应；模型不能执行写操作，也不会多步规划复杂任务。
 2. **检索用 BM25F，非向量检索**。基于字面匹配 + 字段加权 + 情绪码查询扩展，能覆盖几十条知识库的召回，但没有语义泛化能力——换个说法可能召不回同一条策略。
 3. **语音识别分两级**。默认走本地 SenseVoice-Small：CPU 推理，首次识别要加载权重（约 10–13 秒），之后单次 60 秒内音频通常 1 秒内出结果；进程常驻内存约 1.4 GB，加载瞬间峰值约 2.2 GB（实测 5.5 秒样例识别耗时 0.22 秒）。首次启动的自动安装需要能访问 PyPI，装不上会自动退回浏览器 Web Speech API（需 Chrome/Edge + HTTPS/localhost）。单次录音上限 60 秒，长段连续说话需要分段；图像输入仍未接入。
-4. **前端非 TypeScript**。原生 JS，无组件化与类型约束，可维护性有限。
+4. **前端未做组件化**。已迁移 TypeScript（`strict` 全开）并按职责拆成 11 个模块，但仍是原生 DOM 操作，没有组件框架与虚拟 DOM，也没有自动化测试，界面回归靠手工走查。
 5. **情绪判断依赖自我描述**。用户表达不准确时，识别结果会随之偏移；系统不做交叉验证。
 6. **单机部署**。Flask 开发服务器，未做并发与生产级加固。
 
@@ -573,7 +590,8 @@ curl -N -b cookie.txt -X POST http://127.0.0.1:5001/api/chat/stream \
 | 已完成 | 本地离线语音识别 SenseVoice-Small 接入，带在线兜底 | 多模态 |
 | 已完成 | 依赖自检与自动安装、模型权重随包分发 | 交付体验 |
 | 已完成 | SSE 流式输出（边生成边渲染）+ Agent 执行轨迹可视化 | 交互体验 |
-| 计划 | 前端迁移 TypeScript + 组件化 | 工程质量 |
+| 已完成 | 前端 TypeScript 化：接口契约、SSE 事件、Agent 轨迹全部显式类型，模块拆分 + esbuild 打包 | 工程质量 |
+| 计划 | 引入组件化与前端自动化测试 | 工程质量 |
 
 ---
 

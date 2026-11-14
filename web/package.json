@@ -1,0 +1,15 @@
+{
+  "name": "emotion-planet-web",
+  "version": "1.0.0",
+  "private": true,
+  "description": "情绪星球前端源码（TypeScript），编译产物提交到 web/dist",
+  "scripts": {
+    "build": "esbuild src/main.ts src/login.ts --bundle --format=iife --target=es2020 --outdir=dist --log-level=warning",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm run build"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "typescript": "^5.6.0"
+  }
+}

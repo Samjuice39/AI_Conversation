@@ -25,5 +25,8 @@ llm_config.json
 Thumbs.db
 *.bak
 
+# 前端依赖（web/dist 编译产物需要提交，node_modules 不提交）
+web/node_modules/
+
 # 开发过程记录（本地笔记，不属于作品交付物）
 .workbuddy/
