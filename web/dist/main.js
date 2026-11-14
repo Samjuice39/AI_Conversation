@@ -222,9 +222,10 @@
     message.className = "message ai";
     const support = record.suggestion ? `<div class="support"><b>\u53EF\u4EE5\u8BD5\u8BD5\uFF1A</b>${esc(record.suggestion)}</div>` : "";
     const followUp = record.followUpQuestion ? `<div class="followup">${esc(record.followUpQuestion)}</div>` : "";
+    const truncated = record.streamTruncated ? '<div class="truncated">\u8FD9\u6BB5\u56DE\u5E94\u6CA1\u6709\u5B8C\u6574\u751F\u6210\uFF0C\u5EFA\u8BAE\u91CD\u8BD5\u4E00\u6B21\u3002</div>' : "";
     const personalization = record.personalization?.hints?.length ? `<div class="personalization">\u5DF2\u6839\u636E ${record.personalization.feedbackCount ? `${record.personalization.feedbackCount} \u6B21\u53CD\u9988` : "\u8FD1\u671F\u5BF9\u8BDD\u53D8\u5316"} \u8C03\u6574\uFF1A${esc(record.personalization.summary)}</div>` : "";
     const feedback = `<div class="feedback"><button data-feedback="helpful" data-id="${record.id}">\u8FD9\u6761\u56DE\u5E94\u6709\u5E2E\u52A9</button><button data-feedback="not_helpful" data-id="${record.id}">\u4E0D\u592A\u9002\u5408\u6211</button></div>`;
-    message.innerHTML = esc(record.response) + support + followUp + traceHtml(record) + personalization + feedback;
+    message.innerHTML = esc(record.response) + truncated + support + followUp + traceHtml(record) + personalization + feedback;
     const messages = $("messages");
     messages.appendChild(message);
     messages.scrollTop = messages.scrollHeight;
@@ -388,6 +389,7 @@
   var pressing = false;
   var starting = false;
   var audioContextCtor = null;
+  var READY_HINT = "\u672C\u5730\u8BC6\u522B\u5DF2\u5C31\u7EEA \xB7 \u6309\u4F4F\u8BF4\u8BDD\uFF0C\u97F3\u9891\u4E0D\u51FA\u672C\u673A";
   var RECOGNITION_ERRORS = {
     "not-allowed": "\u9EA6\u514B\u98CE\u6216\u8BED\u97F3\u670D\u52A1\u6743\u9650\u88AB\u62D2\u7EDD\uFF0C\u8BF7\u5728\u6D4F\u89C8\u5668\u5730\u5740\u680F\u4E2D\u5141\u8BB8\u9EA6\u514B\u98CE",
     "service-not-allowed": "\u6D4F\u89C8\u5668\u7981\u7528\u4E86\u5728\u7EBF\u8BED\u97F3\u8BC6\u522B\uFF0C\u8BF7\u6362\u7528\u6700\u65B0\u7248 Chrome \u6216 Edge",
@@ -686,7 +688,7 @@
           if (asr.available) {
             window.clearInterval(timer);
             useLocal();
-            status.textContent = "\u672C\u5730\u8BED\u97F3\u5DF2\u5C31\u7EEA\uFF0C\u6309\u4F4F\u6309\u94AE\u8BF4\u8BDD\uFF0C\u677E\u5F00\u8BC6\u522B";
+            status.textContent = READY_HINT;
           } else if (asr.deps && ["failed", "missing", "disabled"].includes(asr.deps.state)) {
             window.clearInterval(timer);
             useOnline();
@@ -696,7 +698,10 @@
       }, 5e3);
     };
     void fetchAsrStatus().then((asr) => {
-      if (asr && asr.available) return;
+      if (asr && asr.available) {
+        status.textContent = asr.cached ? READY_HINT : "\u672C\u5730\u8BC6\u522B\u5C31\u7EEA\uFF0C\u4F46\u6743\u91CD\u672A\u968F\u5305\u5206\u53D1\uFF0C\u9996\u6B21\u8BC6\u522B\u4F1A\u8054\u7F51\u4E0B\u8F7D\u7EA6 900MB";
+        return;
+      }
       if (asr && asr.deps && asr.deps.state === "installing") {
         status.textContent = "\u6B63\u5728\u540E\u53F0\u5B89\u88C5\u672C\u5730\u8BED\u97F3\u4F9D\u8D56\uFF0C\u88C5\u597D\u540E\u6309\u4F4F\u6309\u94AE\u5373\u53EF\u8BF4\u8BDD";
         pollDeps();

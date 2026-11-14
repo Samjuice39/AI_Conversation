@@ -71,6 +71,9 @@ export function addMessage(record: Checkin): void {
   const followUp = record.followUpQuestion
     ? `<div class="followup">${esc(record.followUpQuestion)}</div>`
     : "";
+  const truncated = record.streamTruncated
+    ? '<div class="truncated">这段回应没有完整生成，建议重试一次。</div>'
+    : "";
   const personalization = record.personalization?.hints?.length
     ? `<div class="personalization">已根据 ${
         record.personalization.feedbackCount
@@ -81,7 +84,7 @@ export function addMessage(record: Checkin): void {
   const feedback = `<div class="feedback"><button data-feedback="helpful" data-id="${record.id}">这条回应有帮助</button><button data-feedback="not_helpful" data-id="${record.id}">不太适合我</button></div>`;
 
   message.innerHTML =
-    esc(record.response) + support + followUp + traceHtml(record) + personalization + feedback;
+    esc(record.response) + truncated + support + followUp + traceHtml(record) + personalization + feedback;
 
   const messages = $("messages");
   messages.appendChild(message);

@@ -65,6 +65,8 @@ export interface Checkin {
   feedback: Feedback | null;
   feedbackAt: string | null;
   personalization?: Personalization;
+  /** 已经向前端推过文字、但最终校验失败被降级时，后端会置真。 */
+  streamTruncated?: boolean;
 }
 
 /** 话题（会话）。 */

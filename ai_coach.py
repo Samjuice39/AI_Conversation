@@ -392,6 +392,11 @@ def analyze(context, facts=None, llm_config=None):
     result.update({"source": "fallback", "model": None, "persona": persona})
     if llm_config:
         result["summary"] = "本次大模型接口未返回有效结果，已临时使用本地规则模型。请在「AI 设置」中检查接口地址、密钥和模型名称。"
+        # 用户明明配了模型，再说"配置大模型后…"会让人以为没配成功，这里换成如实的说明。
+        result["response"] = (
+            "这次没能连上你配置的模型，先用本地规则给你一个基础回应。"
+            "可以在「AI 设置」里核对接口地址、密钥和模型名称，或稍后重试。"
+        )
     return result
 
 

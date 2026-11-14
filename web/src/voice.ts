@@ -14,6 +14,9 @@ let pressing = false;
 let starting = false;
 let audioContextCtor: typeof AudioContext | null = null;
 
+/** 本地识别就绪时的固定提示，首次加载与轮询就绪共用。 */
+const READY_HINT = "本地识别已就绪 · 按住说话，音频不出本机";
+
 /** 在线识别的错误码 → 可读提示。 */
 const RECOGNITION_ERRORS: Record<string, string> = {
   "not-allowed": "麦克风或语音服务权限被拒绝，请在浏览器地址栏中允许麦克风",
@@ -364,7 +367,7 @@ export function setupLocalVoice(): void {
         if (asr.available) {
           window.clearInterval(timer);
           useLocal();
-          status.textContent = "本地语音已就绪，按住按钮说话，松开识别";
+          status.textContent = READY_HINT;
         } else if (asr.deps && ["failed", "missing", "disabled"].includes(asr.deps.state)) {
           window.clearInterval(timer);
           useOnline();
@@ -375,7 +378,11 @@ export function setupLocalVoice(): void {
   };
 
   void fetchAsrStatus().then((asr) => {
-    if (asr && asr.available) return;
+    if (asr && asr.available) {
+      // 本地识别是卖点，但界面默认一声不响，用户不知道音频其实没出本机。
+      status.textContent = asr.cached ? READY_HINT : "本地识别就绪，但权重未随包分发，首次识别会联网下载约 900MB";
+      return;
+    }
     if (asr && asr.deps && asr.deps.state === "installing") {
       status.textContent = "正在后台安装本地语音依赖，装好后按住按钮即可说话";
       pollDeps();
