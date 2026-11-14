@@ -590,4 +590,6 @@ curl -N -b cookie.txt -X POST http://127.0.0.1:5001/api/chat/stream \
 
 ## 许可
 
-项目源代码与文档供学习交流使用；使用第三方模型和依赖时，请遵循各自的许可条款。
+本项目源代码与文档采用 [MIT 许可证](LICENSE)，可自由使用、修改与分发，保留版权声明即可。
+
+第三方模型与依赖（Flask、FunASR、SenseVoice-Small 等）遵循各自的许可条款；`knowledge/` 下的干预策略为本项目自行整理，随项目一同授权。
