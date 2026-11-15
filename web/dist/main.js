@@ -380,6 +380,180 @@
     $("input").focus();
   }
 
+  // src/dialogs.ts
+  async function refreshAIStatus() {
+    const data = await api("/api/ai/status");
+    const badge = $("modelBadge");
+    badge.title = "";
+    if (!data.llm.enabled) {
+      badge.textContent = "\u672C\u5730\u89C4\u5219\u6A21\u578B";
+    } else if (data.llm.source === "own") {
+      badge.textContent = `\u6211\u7684 API \xB7 ${data.llm.model}`;
+    } else {
+      const quota = data.llm.quota;
+      badge.textContent = quota ? `\u9ED8\u8BA4\u6A21\u578B \xB7 \u4ECA\u65E5\u5269 ${quota.remaining}/${quota.limit}` : `\u9ED8\u8BA4\u6A21\u578B \xB7 ${data.llm.model}`;
+      badge.title = `${data.llm.model} \xB7 \u6BCF\u65E5 0 \u70B9\u6062\u590D`;
+    }
+  }
+  function bindReportDialog() {
+    const button = $("generateReport");
+    const modal = $("reportModal");
+    const close = () => modal.classList.remove("open");
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      button.textContent = "AI \u6B63\u5728\u56DE\u987E\u2026";
+      try {
+        const data = await api("/api/insights/ai", { method: "POST" });
+        $("reportTitle").textContent = data.report.title;
+        $("reportOverview").textContent = data.report.overview;
+        $("reportPatterns").innerHTML = data.report.patterns.map((item) => `<li>${esc(item)}</li>`).join("");
+        $("reportNext").textContent = `\u4E0B\u4E00\u6B65\uFF1A${data.report.nextStep}`;
+        modal.classList.add("open");
+      } catch (error) {
+        alert(error instanceof Error ? error.message : String(error));
+      } finally {
+        button.disabled = false;
+        button.textContent = "\u751F\u6210 AI \u9636\u6BB5\u56DE\u987E";
+        refreshAIStatus().catch(() => {
+        });
+      }
+    });
+    $("closeReport").addEventListener("click", close);
+    modal.addEventListener("click", (event) => {
+      if (event.target === modal) close();
+    });
+  }
+  function bindAccountDialog() {
+    const modal = $("accountModal");
+    const form = $("accountForm");
+    const password = $("accountPassword");
+    const confirmButton = $("confirmAccount");
+    const close = () => {
+      modal.classList.remove("open");
+      form.reset();
+    };
+    $("deleteAccount").addEventListener("click", () => {
+      modal.classList.add("open");
+      password.focus();
+    });
+    $("closeAccount").addEventListener("click", close);
+    $("cancelAccount").addEventListener("click", close);
+    modal.addEventListener("click", (event) => {
+      if (event.target === modal) close();
+    });
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      confirmButton.disabled = true;
+      confirmButton.textContent = "\u6B63\u5728\u6CE8\u9500\u2026";
+      try {
+        await api("/api/auth/account", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password: password.value })
+        });
+        location.href = "/";
+      } catch (error) {
+        alert(error instanceof Error ? error.message : String(error));
+        confirmButton.disabled = false;
+        confirmButton.textContent = "\u6C38\u4E45\u6CE8\u9500\u8D26\u53F7";
+        password.select();
+      }
+    });
+  }
+  function bindAiSettingsDialog() {
+    const modal = $("aiSettingsModal");
+    const form = $("aiSettingsForm");
+    const status = $("aiSettingsStatus");
+    const baseUrl = $("aiBaseUrl");
+    const model = $("aiModel");
+    const apiKey = $("aiApiKey");
+    const saveButton = $("saveAiSettings");
+    let hasServerDefault = false;
+    const close = () => {
+      modal.classList.remove("open");
+      status.textContent = "";
+      apiKey.value = "";
+    };
+    $("openAiSettings").addEventListener("click", async () => {
+      try {
+        const data = await api("/api/ai/settings");
+        hasServerDefault = data.settings.serverDefault;
+        baseUrl.value = data.settings.baseUrl;
+        model.value = data.settings.model;
+        apiKey.value = "";
+        apiKey.placeholder = data.settings.hasApiKey ? "\u5DF2\u4FDD\u5B58\uFF0C\u7559\u7A7A\u8868\u793A\u4E0D\u4FEE\u6539" : "sk-...";
+        status.textContent = data.settings.enabled ? "\u5F53\u524D\u4F7F\u7528\u4F60\u81EA\u5DF1\u7684 API\uFF0C\u5BF9\u8BDD\u8D70\u4F60\u7684\u8D26\u53F7\u4E0E\u989D\u5EA6" : data.settings.serverDefault ? `\u5F53\u524D\u4F7F\u7528\u672C\u7AD9\u9ED8\u8BA4\u6A21\u578B\uFF08${data.settings.serverModel}\uFF09\uFF0C\u4ECA\u65E5\u5269\u4F59 ${data.settings.quota?.remaining ?? 0}/${data.settings.quota?.limit ?? 0} \u6B21\uFF0C\u6BCF\u65E5 0 \u70B9\u6062\u590D` : "\u5F53\u524D\u672A\u914D\u7F6E\u6A21\u578B\uFF0C\u5C06\u4F7F\u7528\u672C\u5730\u89C4\u5219\u6A21\u578B";
+        modal.classList.add("open");
+      } catch (error) {
+        alert(error instanceof Error ? error.message : String(error));
+      }
+    });
+    $("closeAiSettings").addEventListener("click", close);
+    modal.addEventListener("click", (event) => {
+      if (event.target === modal) close();
+    });
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      saveButton.disabled = true;
+      status.textContent = "\u6B63\u5728\u4FDD\u5B58\u2026";
+      try {
+        await postJson(
+          "/api/ai/settings",
+          {
+            baseUrl: baseUrl.value.trim(),
+            model: model.value.trim(),
+            apiKey: apiKey.value.trim()
+          },
+          "PUT"
+        );
+        await refreshAIStatus();
+        close();
+      } catch (error) {
+        status.textContent = error instanceof Error ? error.message : String(error);
+      } finally {
+        saveButton.disabled = false;
+      }
+    });
+    $("clearAiSettings").addEventListener("click", async () => {
+      const fallback = hasServerDefault ? "\u6062\u590D\u4F7F\u7528\u672C\u7AD9\u9ED8\u8BA4\u6A21\u578B" : "\u6539\u7528\u672C\u5730\u89C4\u5219\u6A21\u578B";
+      if (!confirm(`\u6E05\u9664\u5F53\u524D\u8D26\u53F7\u4FDD\u5B58\u7684 API \u914D\u7F6E\uFF0C${fallback}\u5417\uFF1F`)) return;
+      try {
+        await api("/api/ai/settings", { method: "DELETE" });
+        await refreshAIStatus();
+        close();
+      } catch (error) {
+        status.textContent = error instanceof Error ? error.message : String(error);
+      }
+    });
+  }
+  function bindPersonaFields() {
+    const persona = $("persona");
+    const custom = $("customPersona");
+    const preferredName = $("preferredName");
+    const syncCustomVisibility = () => {
+      custom.style.display = persona.value === "custom" ? "block" : "none";
+    };
+    persona.value = localStorage.getItem("emotionPersona") || "gentle";
+    custom.value = localStorage.getItem("emotionCustomPersona") || "";
+    preferredName.value = localStorage.getItem("emotionPreferredName") || "";
+    syncCustomVisibility();
+    persona.addEventListener("change", () => {
+      localStorage.setItem("emotionPersona", persona.value);
+      syncCustomVisibility();
+    });
+    custom.addEventListener("input", () => localStorage.setItem("emotionCustomPersona", custom.value));
+    preferredName.addEventListener(
+      "input",
+      () => localStorage.setItem("emotionPreferredName", preferredName.value)
+    );
+  }
+  function bindDialogs() {
+    bindReportDialog();
+    bindAccountDialog();
+    bindAiSettingsDialog();
+    bindPersonaFields();
+  }
+
   // src/voice.ts
   var onlineRecognition = null;
   var recorder = null;
@@ -789,176 +963,9 @@
       input.value = text;
     } finally {
       release();
+      refreshAIStatus().catch(() => {
+      });
     }
-  }
-
-  // src/dialogs.ts
-  async function refreshAIStatus() {
-    const data = await api("/api/ai/status");
-    const badge = $("modelBadge");
-    if (!data.llm.enabled) {
-      badge.textContent = "\u672C\u5730\u89C4\u5219\u6A21\u578B";
-    } else if (data.llm.source === "own") {
-      badge.textContent = `\u6211\u7684 API \xB7 ${data.llm.model}`;
-    } else {
-      badge.textContent = `\u9ED8\u8BA4\u6A21\u578B \xB7 ${data.llm.model}`;
-    }
-  }
-  function bindReportDialog() {
-    const button = $("generateReport");
-    const modal = $("reportModal");
-    const close = () => modal.classList.remove("open");
-    button.addEventListener("click", async () => {
-      button.disabled = true;
-      button.textContent = "AI \u6B63\u5728\u56DE\u987E\u2026";
-      try {
-        const data = await api("/api/insights/ai", { method: "POST" });
-        $("reportTitle").textContent = data.report.title;
-        $("reportOverview").textContent = data.report.overview;
-        $("reportPatterns").innerHTML = data.report.patterns.map((item) => `<li>${esc(item)}</li>`).join("");
-        $("reportNext").textContent = `\u4E0B\u4E00\u6B65\uFF1A${data.report.nextStep}`;
-        modal.classList.add("open");
-      } catch (error) {
-        alert(error instanceof Error ? error.message : String(error));
-      } finally {
-        button.disabled = false;
-        button.textContent = "\u751F\u6210 AI \u9636\u6BB5\u56DE\u987E";
-      }
-    });
-    $("closeReport").addEventListener("click", close);
-    modal.addEventListener("click", (event) => {
-      if (event.target === modal) close();
-    });
-  }
-  function bindAccountDialog() {
-    const modal = $("accountModal");
-    const form = $("accountForm");
-    const password = $("accountPassword");
-    const confirmButton = $("confirmAccount");
-    const close = () => {
-      modal.classList.remove("open");
-      form.reset();
-    };
-    $("deleteAccount").addEventListener("click", () => {
-      modal.classList.add("open");
-      password.focus();
-    });
-    $("closeAccount").addEventListener("click", close);
-    $("cancelAccount").addEventListener("click", close);
-    modal.addEventListener("click", (event) => {
-      if (event.target === modal) close();
-    });
-    form.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      confirmButton.disabled = true;
-      confirmButton.textContent = "\u6B63\u5728\u6CE8\u9500\u2026";
-      try {
-        await api("/api/auth/account", {
-          method: "DELETE",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ password: password.value })
-        });
-        location.href = "/";
-      } catch (error) {
-        alert(error instanceof Error ? error.message : String(error));
-        confirmButton.disabled = false;
-        confirmButton.textContent = "\u6C38\u4E45\u6CE8\u9500\u8D26\u53F7";
-        password.select();
-      }
-    });
-  }
-  function bindAiSettingsDialog() {
-    const modal = $("aiSettingsModal");
-    const form = $("aiSettingsForm");
-    const status = $("aiSettingsStatus");
-    const baseUrl = $("aiBaseUrl");
-    const model = $("aiModel");
-    const apiKey = $("aiApiKey");
-    const saveButton = $("saveAiSettings");
-    let hasServerDefault = false;
-    const close = () => {
-      modal.classList.remove("open");
-      status.textContent = "";
-      apiKey.value = "";
-    };
-    $("openAiSettings").addEventListener("click", async () => {
-      try {
-        const data = await api("/api/ai/settings");
-        hasServerDefault = data.settings.serverDefault;
-        baseUrl.value = data.settings.baseUrl;
-        model.value = data.settings.model;
-        apiKey.value = "";
-        apiKey.placeholder = data.settings.hasApiKey ? "\u5DF2\u4FDD\u5B58\uFF0C\u7559\u7A7A\u8868\u793A\u4E0D\u4FEE\u6539" : "sk-...";
-        status.textContent = data.settings.enabled ? "\u5F53\u524D\u4F7F\u7528\u4F60\u81EA\u5DF1\u7684 API\uFF0C\u5BF9\u8BDD\u8D70\u4F60\u7684\u8D26\u53F7\u4E0E\u989D\u5EA6" : data.settings.serverDefault ? `\u5F53\u524D\u4F7F\u7528\u672C\u7AD9\u9ED8\u8BA4\u6A21\u578B\uFF08${data.settings.serverModel}\uFF09\uFF0C\u65E0\u9700\u914D\u7F6E` : "\u5F53\u524D\u672A\u914D\u7F6E\u6A21\u578B\uFF0C\u5C06\u4F7F\u7528\u672C\u5730\u89C4\u5219\u6A21\u578B";
-        modal.classList.add("open");
-      } catch (error) {
-        alert(error instanceof Error ? error.message : String(error));
-      }
-    });
-    $("closeAiSettings").addEventListener("click", close);
-    modal.addEventListener("click", (event) => {
-      if (event.target === modal) close();
-    });
-    form.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      saveButton.disabled = true;
-      status.textContent = "\u6B63\u5728\u4FDD\u5B58\u2026";
-      try {
-        await postJson(
-          "/api/ai/settings",
-          {
-            baseUrl: baseUrl.value.trim(),
-            model: model.value.trim(),
-            apiKey: apiKey.value.trim()
-          },
-          "PUT"
-        );
-        await refreshAIStatus();
-        close();
-      } catch (error) {
-        status.textContent = error instanceof Error ? error.message : String(error);
-      } finally {
-        saveButton.disabled = false;
-      }
-    });
-    $("clearAiSettings").addEventListener("click", async () => {
-      const fallback = hasServerDefault ? "\u6062\u590D\u4F7F\u7528\u672C\u7AD9\u9ED8\u8BA4\u6A21\u578B" : "\u6539\u7528\u672C\u5730\u89C4\u5219\u6A21\u578B";
-      if (!confirm(`\u6E05\u9664\u5F53\u524D\u8D26\u53F7\u4FDD\u5B58\u7684 API \u914D\u7F6E\uFF0C${fallback}\u5417\uFF1F`)) return;
-      try {
-        await api("/api/ai/settings", { method: "DELETE" });
-        await refreshAIStatus();
-        close();
-      } catch (error) {
-        status.textContent = error instanceof Error ? error.message : String(error);
-      }
-    });
-  }
-  function bindPersonaFields() {
-    const persona = $("persona");
-    const custom = $("customPersona");
-    const preferredName = $("preferredName");
-    const syncCustomVisibility = () => {
-      custom.style.display = persona.value === "custom" ? "block" : "none";
-    };
-    persona.value = localStorage.getItem("emotionPersona") || "gentle";
-    custom.value = localStorage.getItem("emotionCustomPersona") || "";
-    preferredName.value = localStorage.getItem("emotionPreferredName") || "";
-    syncCustomVisibility();
-    persona.addEventListener("change", () => {
-      localStorage.setItem("emotionPersona", persona.value);
-      syncCustomVisibility();
-    });
-    custom.addEventListener("input", () => localStorage.setItem("emotionCustomPersona", custom.value));
-    preferredName.addEventListener(
-      "input",
-      () => localStorage.setItem("emotionPreferredName", preferredName.value)
-    );
-  }
-  function bindDialogs() {
-    bindReportDialog();
-    bindAccountDialog();
-    bindAiSettingsDialog();
-    bindPersonaFields();
   }
 
   // src/main.ts

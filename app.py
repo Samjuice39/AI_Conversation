@@ -46,10 +46,15 @@ _load_env_file(os.path.join(BASE_DIR, ".env"))
 
 # Agent 工作流开关；设为 0 时退回单轮分析。
 AGENT_MODE = os.environ.get("AGENT_MODE", "1") not in ("0", "false", "False")
+# 共享默认模型按账号限流；自己的 API 与本地规则不受此限制。
+try:
+    SERVER_LLM_DAILY_LIMIT = max(1, min(int(os.environ.get("EMOTION_LLM_DAILY_LIMIT", "10")), 1000))
+except ValueError:
+    SERVER_LLM_DAILY_LIMIT = 10
 
 
 def run_analysis(text, context, sleep, history, user_id, persona="gentle",
-                 custom_persona="", preferred_name=""):
+                 custom_persona="", preferred_name="", llm_config=None):
     """先取数，再生成；取数失败退回单轮。"""
     payload = {"text": text, "taskContext": context, "persona": persona,
                "customPersona": custom_persona, "preferredName": preferred_name,
@@ -58,7 +63,8 @@ def run_analysis(text, context, sleep, history, user_id, persona="gentle",
     profile_hint = format_for_prompt(profile)
     if profile_hint:
         payload["userProfile"] = profile_hint
-    llm_config = get_user_llm_config(user_id)
+    if llm_config is None:
+        llm_config = get_user_llm_config(user_id)
 
     facts, trace = [], None
     if AGENT_MODE and llm_config:
@@ -142,6 +148,15 @@ def init_db():
                 base_url TEXT NOT NULL,
                 timeout REAL NOT NULL DEFAULT 60,
                 updated_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS llm_daily_usage (
+                user_id INTEGER NOT NULL,
+                usage_date TEXT NOT NULL,
+                used INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (user_id, usage_date),
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             )
         """)
@@ -305,6 +320,7 @@ def delete_account():
         conn.execute("DELETE FROM checkins WHERE user_id = ?", (user[0],))
         conn.execute("DELETE FROM conversations WHERE user_id = ?", (user[0],))
         conn.execute("DELETE FROM user_ai_settings WHERE user_id = ?", (user[0],))
+        conn.execute("DELETE FROM llm_daily_usage WHERE user_id = ?", (user[0],))
         conn.execute("DELETE FROM users WHERE id = ?", (user[0],))
     session.clear()
     return jsonify({"ok": True})
@@ -359,6 +375,68 @@ def get_user_llm_config(user_id):
     return get_own_llm_config(user_id) or get_server_llm_config()
 
 
+def get_server_quota(user_id):
+    """默认模型当日用量；日期与业务记录一致，使用服务器本地时间。"""
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT used FROM llm_daily_usage WHERE user_id = ? AND usage_date = date('now', 'localtime')",
+            (user_id,),
+        ).fetchone()
+    used = row["used"] if row else 0
+    return {
+        "limit": SERVER_LLM_DAILY_LIMIT,
+        "used": used,
+        "remaining": max(0, SERVER_LLM_DAILY_LIMIT - used),
+    }
+
+
+def reserve_server_quota(user_id):
+    """原子占用一次额度，避免同一账号的并发请求同时越过上限。"""
+    with get_db() as conn:
+        cursor = conn.execute("""
+            INSERT INTO llm_daily_usage (user_id, usage_date, used)
+            VALUES (?, date('now', 'localtime'), 1)
+            ON CONFLICT(user_id, usage_date) DO UPDATE SET used = used + 1
+            WHERE llm_daily_usage.used < ?
+        """, (user_id, SERVER_LLM_DAILY_LIMIT))
+    return cursor.rowcount == 1
+
+
+def release_server_quota(user_id):
+    """模型失败、降级或未保存时返还预留额度。"""
+    with get_db() as conn:
+        conn.execute("""
+            UPDATE llm_daily_usage SET used = MAX(0, used - 1)
+            WHERE user_id = ? AND usage_date = date('now', 'localtime')
+        """, (user_id,))
+
+
+def quota_exceeded_response(user_id):
+    quota = get_server_quota(user_id)
+    return jsonify({
+        "ok": False,
+        "error": f"今日默认模型免费额度已用完（{quota['used']}/{quota['limit']}）。"
+                 "明天自动恢复；也可以在「AI 设置」中改用自己的 API。",
+        "code": "QUOTA_EXCEEDED", "quota": quota,
+    }), 429
+
+
+def prepare_llm_request(user_id, text=""):
+    """返回 (模型配置, 是否预留了共享额度, 超额响应)。危机表达始终可走本地规则。"""
+    config = get_user_llm_config(user_id)
+    if not config or config.get("source") != "server":
+        return config, False, None
+    if reserve_server_quota(user_id):
+        return config, True, None
+    if text and CRISIS_PATTERN.search(text):
+        return None, False, None
+    return config, False, quota_exceeded_response(user_id)
+
+
+def llm_request_succeeded(result):
+    return bool(result.get("model")) and result.get("source") in ("llm", "agent")
+
+
 def public_ai_settings(user_id):
     # enabled 只表示「这个账号有没有自己的配置」，默认模型不影响它。
     config = get_own_llm_config(user_id)
@@ -370,6 +448,7 @@ def public_ai_settings(user_id):
         "hasApiKey": bool(config),
         "serverDefault": bool(default),
         "serverModel": default["model"] if default else "",
+        "quota": get_server_quota(user_id) if default and not config else None,
     }
 
 
@@ -385,6 +464,7 @@ def ai_status():
     elif config:
         description["note"] = "使用本站默认模型，无需自行配置"
         description["source"] = "server"
+        description["quota"] = get_server_quota(user[0])
     else:
         description["note"] = "未配置模型，使用本地规则"
         description["source"] = "fallback"
@@ -828,13 +908,21 @@ def chat():
     if error:
         return jsonify(error[0]), error[1]
     conversation_id, history, preferred_name = prepared
+    llm_config, reserved, quota_error = prepare_llm_request(user[0], params["text"])
+    if quota_error:
+        return quota_error
     try:
         result = run_analysis(params["text"], params["context"], params["sleep"], history,
-                              user[0], params["persona"], params["customPersona"], preferred_name)
+                              user[0], params["persona"], params["customPersona"], preferred_name,
+                              llm_config=llm_config)
     except Exception as exc:
+        if reserved:
+            release_server_quota(user[0])
         print(f"[AI] 分析失败：{exc}")
         return jsonify({"ok": False, "error": f"AI 分析失败：{exc}"}), 503
     payload = _save_checkin(user[0], conversation_id, params, result)
+    if reserved and (payload is None or not llm_request_succeeded(result)):
+        release_server_quota(user[0])
     if payload is None:
         return jsonify({"ok": False, "error": "话题已被删除，本次回复未保存"}), 404
     return jsonify({"ok": True, "result": payload})
@@ -848,11 +936,15 @@ def chat_stream():
         return jsonify(error[0]), error[1]
     conversation_id, history, preferred_name = prepared
     user_id = user[0]
+    llm_config, reserved, quota_error = prepare_llm_request(user_id, params["text"])
+    if quota_error:
+        return quota_error
 
     def event(payload):
         return "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
 
     def generate():
+        charge_quota = False
         try:
             payload = {
                 "text": params["text"], "taskContext": params["context"],
@@ -864,7 +956,6 @@ def chat_stream():
             profile_hint = format_for_prompt(profile)
             if profile_hint:
                 payload["userProfile"] = profile_hint
-            llm_config = get_user_llm_config(user_id)
 
             facts, trace = [], []
             if AGENT_MODE and llm_config:
@@ -896,10 +987,14 @@ def chat_stream():
             if saved is None:
                 yield event({"type": "error", "message": "话题已被删除，本次回复未保存"})
                 return
+            charge_quota = llm_request_succeeded(result)
             yield event({"type": "final", "result": saved})
         except Exception as exc:  # noqa: BLE001 - 响应已开始，只能以事件形式报错
             print(f"[AI] 流式对话失败：{type(exc).__name__}: {exc}")
             yield event({"type": "error", "message": f"AI 分析失败：{exc}"})
+        finally:
+            if reserved and not charge_quota:
+                release_server_quota(user_id)
 
     return Response(stream_with_context(generate()), mimetype="text/event-stream", headers={
         "Cache-Control": "no-cache",
@@ -990,11 +1085,16 @@ def ai_insights():
     stats = build_stats(user[0])
     if stats["total"] < 3:
         return jsonify({"ok": False, "error": "至少完成 3 次记录后，才能生成有边界的阶段回顾"}), 400
+    llm_config, reserved, quota_error = prepare_llm_request(user[0])
+    if quota_error:
+        return quota_error
     try:
-        result = generate_insights(stats, llm_config=get_user_llm_config(user[0]))
+        result = generate_insights(stats, llm_config=llm_config)
     except Exception as exc:
         print(f"[AI] 阶段回顾请求失败，改用本地规则：{type(exc).__name__}: {exc}")
         result = generate_insights(stats)
+    if reserved and not result.get("model"):
+        release_server_quota(user[0])
     return jsonify({"ok": True, "report": result})
 
 

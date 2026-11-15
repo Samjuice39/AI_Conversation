@@ -6,12 +6,17 @@ import type { AiSettings, AiStatus, Report } from "./types.js";
 export async function refreshAIStatus(): Promise<void> {
   const data = await api<{ llm: AiStatus }>("/api/ai/status");
   const badge = $("modelBadge");
+  badge.title = "";
   if (!data.llm.enabled) {
     badge.textContent = "本地规则模型";
   } else if (data.llm.source === "own") {
     badge.textContent = `我的 API · ${data.llm.model}`;
   } else {
-    badge.textContent = `默认模型 · ${data.llm.model}`;
+    const quota = data.llm.quota;
+    badge.textContent = quota
+      ? `默认模型 · 今日剩 ${quota.remaining}/${quota.limit}`
+      : `默认模型 · ${data.llm.model}`;
+    badge.title = `${data.llm.model} · 每日 0 点恢复`;
   }
 }
 
@@ -36,6 +41,9 @@ function bindReportDialog(): void {
     } finally {
       button.disabled = false;
       button.textContent = "生成 AI 阶段回顾";
+      refreshAIStatus().catch(() => {
+        // 用量刷新失败不影响报告展示
+      });
     }
   });
 
@@ -115,7 +123,7 @@ function bindAiSettingsDialog(): void {
       status.textContent = data.settings.enabled
         ? "当前使用你自己的 API，对话走你的账号与额度"
         : data.settings.serverDefault
-          ? `当前使用本站默认模型（${data.settings.serverModel}），无需配置`
+          ? `当前使用本站默认模型（${data.settings.serverModel}），今日剩余 ${data.settings.quota?.remaining ?? 0}/${data.settings.quota?.limit ?? 0} 次，每日 0 点恢复`
           : "当前未配置模型，将使用本地规则模型";
       modal.classList.add("open");
     } catch (error) {

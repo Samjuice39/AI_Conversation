@@ -1,5 +1,6 @@
 import { streamChat } from "./api.js";
 import { loadConversations } from "./conversations.js";
+import { refreshAIStatus } from "./dialogs.js";
 import { $ } from "./dom.js";
 import { refresh } from "./insights.js";
 import { addMessage, renderHistory, setMood } from "./render.js";
@@ -102,5 +103,8 @@ export async function sendMessage(): Promise<void> {
     input.value = text;
   } finally {
     release();
+    refreshAIStatus().catch(() => {
+      // 用量刷新失败不影响已完成的对话
+    });
   }
 }

@@ -115,6 +115,13 @@ export interface AsrStatus {
   deps: { state: "ready" | "installing" | "failed" | "missing" | "disabled" | string; message?: string };
 }
 
+/** 服务端默认模型的当日额度。 */
+export interface AiQuota {
+  limit: number;
+  used: number;
+  remaining: number;
+}
+
 /** 当前生效的大模型状态；source 区分是自己的配置还是本站默认模型。 */
 export interface AiStatus {
   enabled: boolean;
@@ -122,6 +129,7 @@ export interface AiStatus {
   model: string;
   note?: string;
   source?: "own" | "server" | "fallback";
+  quota?: AiQuota;
 }
 
 /** AI 设置表单回填的数据。enabled/hasApiKey 只反映账号自己的配置。 */
@@ -133,6 +141,7 @@ export interface AiSettings {
   hasApiKey: boolean;
   serverDefault: boolean;
   serverModel: string;
+  quota: AiQuota | null;
 }
 
 /** 发送一条消息时的请求体。 */
