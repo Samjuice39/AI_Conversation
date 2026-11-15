@@ -390,7 +390,14 @@ def analyze(context, facts=None, llm_config=None):
             print(f"[AI] 第 {attempt + 1} 次结构化输出校验失败：{exc}")
     result = _fallback(text)
     result.update({"source": "fallback", "model": None, "persona": persona})
-    if llm_config:
+    if llm_config and llm_config.get("source") == "server":
+        # 默认模型是部署方配的，让用户去核对自己的密钥没有意义。
+        result["summary"] = "本次默认模型接口未返回有效结果，已临时使用本地规则模型。"
+        result["response"] = (
+            "这次没能连上默认模型，先用本地规则给你一个基础回应。"
+            "可以稍后重试；如果你有自己的模型接口，也可以在「AI 设置」里切换过去。"
+        )
+    elif llm_config:
         result["summary"] = "本次大模型接口未返回有效结果，已临时使用本地规则模型。请在「AI 设置」中检查接口地址、密钥和模型名称。"
         # 用户明明配了模型，再说"配置大模型后…"会让人以为没配成功，这里换成如实的说明。
         result["response"] = (
@@ -523,6 +530,11 @@ def analyze_stream(context, facts=None, llm_config=None):
     if streamed_ok and result.get("source") != "llm":
         # 已经给前端吐过字了，最终却降级：明确告知，避免前端把半截文字当成完整回应。
         result["streamTruncated"] = True
+    if not streamed_ok and result.get("source") == "llm":
+        # 部分网关在 json_object 模式下不产出任何流式分片，只能在结束后退回一次性请求。
+        # 结果此时已经完整，按节奏补推，免得用户干等一分钟再看到整段弹出。
+        for piece in _paced_tokens(result.get("response") or ""):
+            yield ("token", piece)
     yield ("result", result)
 
 

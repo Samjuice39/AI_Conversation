@@ -2,12 +2,17 @@ import { api, postJson } from "./api.js";
 import { $, esc } from "./dom.js";
 import type { AiSettings, AiStatus, Report } from "./types.js";
 
-/** 顶部徽标：当前是"我的 API"还是本地规则模型。 */
+/** 顶部徽标：默认模型 / 我的 API / 本地规则。 */
 export async function refreshAIStatus(): Promise<void> {
   const data = await api<{ llm: AiStatus }>("/api/ai/status");
-  $("modelBadge").textContent = data.llm.enabled
-    ? `我的 API · ${data.llm.model}`
-    : "本地规则 · 未配置 API";
+  const badge = $("modelBadge");
+  if (!data.llm.enabled) {
+    badge.textContent = "本地规则模型";
+  } else if (data.llm.source === "own") {
+    badge.textContent = `我的 API · ${data.llm.model}`;
+  } else {
+    badge.textContent = `默认模型 · ${data.llm.model}`;
+  }
 }
 
 /** 阶段回顾弹窗。 */
@@ -82,7 +87,7 @@ function bindAccountDialog(): void {
   });
 }
 
-/** 自己的大模型接口设置弹窗。 */
+/** 大模型接口设置弹窗：默认用本站模型，自己的 API 是可选项。 */
 function bindAiSettingsDialog(): void {
   const modal = $("aiSettingsModal");
   const form = $<HTMLFormElement>("aiSettingsForm");
@@ -91,6 +96,7 @@ function bindAiSettingsDialog(): void {
   const model = $<HTMLInputElement>("aiModel");
   const apiKey = $<HTMLInputElement>("aiApiKey");
   const saveButton = $<HTMLButtonElement>("saveAiSettings");
+  let hasServerDefault = false;
 
   const close = (): void => {
     modal.classList.remove("open");
@@ -101,11 +107,16 @@ function bindAiSettingsDialog(): void {
   $("openAiSettings").addEventListener("click", async () => {
     try {
       const data = await api<{ settings: AiSettings }>("/api/ai/settings");
+      hasServerDefault = data.settings.serverDefault;
       baseUrl.value = data.settings.baseUrl;
       model.value = data.settings.model;
       apiKey.value = "";
       apiKey.placeholder = data.settings.hasApiKey ? "已保存，留空表示不修改" : "sk-...";
-      status.textContent = data.settings.enabled ? "当前使用自己的 API" : "当前未配置 API，将使用本地规则模型";
+      status.textContent = data.settings.enabled
+        ? "当前使用你自己的 API，对话走你的账号与额度"
+        : data.settings.serverDefault
+          ? `当前使用本站默认模型（${data.settings.serverModel}），无需配置`
+          : "当前未配置模型，将使用本地规则模型";
       modal.classList.add("open");
     } catch (error) {
       alert(error instanceof Error ? error.message : String(error));
@@ -141,7 +152,8 @@ function bindAiSettingsDialog(): void {
   });
 
   $("clearAiSettings").addEventListener("click", async () => {
-    if (!confirm("清除当前账号保存的 API 配置，改用本地规则模型吗？")) return;
+    const fallback = hasServerDefault ? "恢复使用本站默认模型" : "改用本地规则模型";
+    if (!confirm(`清除当前账号保存的 API 配置，${fallback}吗？`)) return;
     try {
       await api("/api/ai/settings", { method: "DELETE" });
       await refreshAIStatus();

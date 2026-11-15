@@ -115,21 +115,24 @@ export interface AsrStatus {
   deps: { state: "ready" | "installing" | "failed" | "missing" | "disabled" | string; message?: string };
 }
 
-/** 当前账号的大模型配置状态。 */
+/** 当前生效的大模型状态；source 区分是自己的配置还是本站默认模型。 */
 export interface AiStatus {
   enabled: boolean;
   provider: string;
   model: string;
   note?: string;
+  source?: "own" | "server" | "fallback";
 }
 
-/** AI 设置表单回填的数据。 */
+/** AI 设置表单回填的数据。enabled/hasApiKey 只反映账号自己的配置。 */
 export interface AiSettings {
   enabled: boolean;
   provider: string;
   baseUrl: string;
   model: string;
   hasApiKey: boolean;
+  serverDefault: boolean;
+  serverModel: string;
 }
 
 /** 发送一条消息时的请求体。 */

@@ -795,7 +795,14 @@
   // src/dialogs.ts
   async function refreshAIStatus() {
     const data = await api("/api/ai/status");
-    $("modelBadge").textContent = data.llm.enabled ? `\u6211\u7684 API \xB7 ${data.llm.model}` : "\u672C\u5730\u89C4\u5219 \xB7 \u672A\u914D\u7F6E API";
+    const badge = $("modelBadge");
+    if (!data.llm.enabled) {
+      badge.textContent = "\u672C\u5730\u89C4\u5219\u6A21\u578B";
+    } else if (data.llm.source === "own") {
+      badge.textContent = `\u6211\u7684 API \xB7 ${data.llm.model}`;
+    } else {
+      badge.textContent = `\u9ED8\u8BA4\u6A21\u578B \xB7 ${data.llm.model}`;
+    }
   }
   function bindReportDialog() {
     const button = $("generateReport");
@@ -868,6 +875,7 @@
     const model = $("aiModel");
     const apiKey = $("aiApiKey");
     const saveButton = $("saveAiSettings");
+    let hasServerDefault = false;
     const close = () => {
       modal.classList.remove("open");
       status.textContent = "";
@@ -876,11 +884,12 @@
     $("openAiSettings").addEventListener("click", async () => {
       try {
         const data = await api("/api/ai/settings");
+        hasServerDefault = data.settings.serverDefault;
         baseUrl.value = data.settings.baseUrl;
         model.value = data.settings.model;
         apiKey.value = "";
         apiKey.placeholder = data.settings.hasApiKey ? "\u5DF2\u4FDD\u5B58\uFF0C\u7559\u7A7A\u8868\u793A\u4E0D\u4FEE\u6539" : "sk-...";
-        status.textContent = data.settings.enabled ? "\u5F53\u524D\u4F7F\u7528\u81EA\u5DF1\u7684 API" : "\u5F53\u524D\u672A\u914D\u7F6E API\uFF0C\u5C06\u4F7F\u7528\u672C\u5730\u89C4\u5219\u6A21\u578B";
+        status.textContent = data.settings.enabled ? "\u5F53\u524D\u4F7F\u7528\u4F60\u81EA\u5DF1\u7684 API\uFF0C\u5BF9\u8BDD\u8D70\u4F60\u7684\u8D26\u53F7\u4E0E\u989D\u5EA6" : data.settings.serverDefault ? `\u5F53\u524D\u4F7F\u7528\u672C\u7AD9\u9ED8\u8BA4\u6A21\u578B\uFF08${data.settings.serverModel}\uFF09\uFF0C\u65E0\u9700\u914D\u7F6E` : "\u5F53\u524D\u672A\u914D\u7F6E\u6A21\u578B\uFF0C\u5C06\u4F7F\u7528\u672C\u5730\u89C4\u5219\u6A21\u578B";
         modal.classList.add("open");
       } catch (error) {
         alert(error instanceof Error ? error.message : String(error));
@@ -913,7 +922,8 @@
       }
     });
     $("clearAiSettings").addEventListener("click", async () => {
-      if (!confirm("\u6E05\u9664\u5F53\u524D\u8D26\u53F7\u4FDD\u5B58\u7684 API \u914D\u7F6E\uFF0C\u6539\u7528\u672C\u5730\u89C4\u5219\u6A21\u578B\u5417\uFF1F")) return;
+      const fallback = hasServerDefault ? "\u6062\u590D\u4F7F\u7528\u672C\u7AD9\u9ED8\u8BA4\u6A21\u578B" : "\u6539\u7528\u672C\u5730\u89C4\u5219\u6A21\u578B";
+      if (!confirm(`\u6E05\u9664\u5F53\u524D\u8D26\u53F7\u4FDD\u5B58\u7684 API \u914D\u7F6E\uFF0C${fallback}\u5417\uFF1F`)) return;
       try {
         await api("/api/ai/settings", { method: "DELETE" });
         await refreshAIStatus();

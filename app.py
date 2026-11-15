@@ -322,7 +322,25 @@ def me():
                     "preferredName": preferred_name})
 
 
-def get_user_llm_config(user_id):
+def get_server_llm_config():
+    """部署方在 .env 里配一次，没填自己 API 的账号共用这份默认配置。"""
+    api_key = os.environ.get("EMOTION_LLM_API_KEY", "").strip()
+    model = os.environ.get("EMOTION_LLM_MODEL", "").strip()
+    if not api_key or not model:
+        return None
+    try:
+        timeout = float(os.environ.get("EMOTION_LLM_TIMEOUT", "60") or 60)
+    except ValueError:
+        timeout = 60.0
+    return {
+        "provider": os.environ.get("EMOTION_LLM_PROVIDER", "openai").strip() or "openai",
+        "apiKey": api_key, "model": model,
+        "baseUrl": os.environ.get("EMOTION_LLM_BASE_URL", "").strip().rstrip("/"),
+        "timeout": timeout, "source": "server",
+    }
+
+
+def get_own_llm_config(user_id):
     with get_db() as conn:
         row = conn.execute(
             "SELECT provider, api_key, model, base_url, timeout FROM user_ai_settings WHERE user_id = ?",
@@ -332,26 +350,44 @@ def get_user_llm_config(user_id):
         return None
     return {
         "provider": row["provider"], "apiKey": row["api_key"], "model": row["model"],
-        "baseUrl": row["base_url"], "timeout": row["timeout"],
+        "baseUrl": row["base_url"], "timeout": row["timeout"], "source": "own",
     }
 
 
+def get_user_llm_config(user_id):
+    """账号自己的配置优先；没配就走部署方的默认模型，不要求用户自带 key。"""
+    return get_own_llm_config(user_id) or get_server_llm_config()
+
+
 def public_ai_settings(user_id):
-    config = get_user_llm_config(user_id)
+    # enabled 只表示「这个账号有没有自己的配置」，默认模型不影响它。
+    config = get_own_llm_config(user_id)
+    default = get_server_llm_config()
     return {
         "enabled": bool(config), "provider": "openai",
         "baseUrl": config["baseUrl"] if config else "https://api.deepseek.com/v1",
         "model": config["model"] if config else "deepseek-chat",
         "hasApiKey": bool(config),
+        "serverDefault": bool(default),
+        "serverModel": default["model"] if default else "",
     }
 
 
 @app.route("/api/ai/status")
 def ai_status():
     user = require_user()
-    config = get_user_llm_config(user[0])
+    own = get_own_llm_config(user[0])
+    config = own or get_server_llm_config()
     description = llm_describe(config or {"provider": "none"})
-    description["note"] = "使用当前账号的大模型配置" if config else "未填写 API，使用本地规则模型"
+    if own:
+        description["note"] = "使用当前账号的大模型配置"
+        description["source"] = "own"
+    elif config:
+        description["note"] = "使用本站默认模型，无需自行配置"
+        description["source"] = "server"
+    else:
+        description["note"] = "未配置模型，使用本地规则"
+        description["source"] = "fallback"
     return jsonify({"ok": True, "llm": description})
 
 
@@ -379,9 +415,10 @@ def ai_settings():
         return jsonify({"ok": False, "error": "API 地址不能包含账号、密码、查询参数或锚点"}), 400
     if len(base_url) > 300 or not 1 <= len(model) <= 100 or len(api_key) > 500:
         return jsonify({"ok": False, "error": "模型名称或 API 地址格式不正确"}), 400
-    existing = get_user_llm_config(user[0])
+    # 这里只能读账号自己的配置：读到默认模型会把部署方的 key 写进用户表。
+    existing = get_own_llm_config(user[0])
     if not api_key and not existing:
-        return jsonify({"ok": False, "error": "请填写自己的 API Key；也可以取消，直接使用本地规则模型"}), 400
+        return jsonify({"ok": False, "error": "要换用自己的模型时请填写 API Key；也可以直接取消，继续使用默认模型"}), 400
     api_key = api_key or existing["apiKey"]
     with get_db() as conn:
         conn.execute("""
