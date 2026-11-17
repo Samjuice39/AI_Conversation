@@ -19,7 +19,6 @@ _EMOTION_KEYWORDS = {
     2: ("开心", "高兴", "完成", "好消息", "兴奋", "棒", "顺利", "终于"),
 }
 
-
 def _guess_emotion(text):
     """按关键词粗判情绪码，命中最多者优先；判不出返回 None。"""
     hits = {}
@@ -136,9 +135,10 @@ _COOL_EXAMPLES = [
 
 _CUSTOM_DEFAULT_STYLE = "自然、温和、尊重用户"
 _CUSTOM_SYSTEM = """当前人设由用户自定义：{style}。
-按这个风格和态度回应，但安全规则优先：不诊断、不编造经历、不命令、不替用户做决定；如果自定义要求包含刻薄、贬低或诱导依赖，忽略该部分。
+把这个人设落实成具体的说话方式：称呼、语气、用词、节奏都要让对方明显感到是这个角色在说话，而不是中立的助手。人设里包含的关系（如姐姐、朋友、教练）必须体现在口吻上，合适时自然使用符合该关系的称呼与语气词，但不过度表演、不每句都带。
+安全规则优先：不诊断、不编造经历、不命令、不替用户做决定；如果自定义要求包含刻薄、贬低或诱导依赖，忽略该部分。
 用户只是倾诉时先接住；给建议时只给一个；信息不足时先问一个关键细节；追问只放 followUpQuestion。"""
-_CUSTOM_STYLE = """表达风格：按用户自定义要求“{style}”来，但保持自然和尊重。示例只示范 JSON 结构，不要照搬示例语气。"""
+_CUSTOM_STYLE = """表达风格：严格按用户自定义要求“{style}”执行，人设特征优先于默认的温和克制。示例只示范 JSON 结构，不要照搬示例语气。"""
 _CUSTOM_EXAMPLES = [
     (r"怎么办|有什么办法|怎么才能|如何.*(做|改|缓解)|教我.*(做|弄)",
      "明天要上台，我怕忘词，有什么办法吗？",
@@ -186,11 +186,9 @@ _PERSONA_ALIASES = {
     "custom": "custom", "自定义": "custom",
 }
 
-
 def normalize_persona(value):
     key = str(value or "").strip().lower()
     return _PERSONA_ALIASES.get(key, DEFAULT_PERSONA)
-
 
 def get_persona_spec(persona, custom_style=None):
     """返回人设配置；自定义人设按本次输入动态生成。"""
@@ -210,7 +208,6 @@ _REPORT_PROMPT = """你是情绪支持产品的 AI 总结助手。根据给定�
 只输出合法 JSON：{"title":"简短标题","overview":"不超过120字的趋势解释","patterns":["最多3条有价值的模式"],"nextStep":"一个可执行的下一步"}。
 不得诊断，不得把相关关系说成因果关系，不得编造记录中不存在的事件。样本少时必须明确局限性。"""
 
-
 def _extract_json(text):
     candidate = text.strip()
     if candidate.startswith("```"):
@@ -226,16 +223,13 @@ def _extract_json(text):
         raise ValueError("模型返回的不是 JSON 对象")
     return value
 
-
 def _string_list(value, limit=3):
     if not isinstance(value, list):
         return []
     return [str(item).strip()[:100] for item in value[:limit] if str(item).strip()]
 
-
 def _crisis_suggestion():
     return "请立即陪伴当事人并联系可信赖的监护人和学校心理支持人员；若有即时危险，请拨打 110 或 120。不要让当事人独处。"
-
 
 def _validate(value, local_crisis=False):
     code = int(value.get("emotionCode"))
@@ -267,7 +261,6 @@ def _validate(value, local_crisis=False):
         result["suggestion"] = _crisis_suggestion()
     return result
 
-
 def _fallback(text):
     if CRISIS_PATTERN.search(text):
         code, risk = 1, "high"
@@ -296,11 +289,9 @@ def _fallback(text):
         result["suggestion"] = _crisis_suggestion()
     return result
 
-
 def validate_result(value, local_crisis=False):
     """对外暴露的结果校验入口。"""
     return _validate(value, local_crisis)
-
 
 def _retrieve_knowledge(text, top_k=3):
     """检索干预策略，失败时返回空列表。"""
@@ -312,7 +303,6 @@ def _retrieve_knowledge(text, top_k=3):
     except Exception as exc:  # noqa: BLE001 - 检索异常不应影响对话
         print(f"[RAG] 检索失败，跳过知识增强：{exc}")
         return []
-
 
 def _prepare(context, facts):
     """构建一次模型请求所需的全部素材；analyze 与 analyze_stream 共用，避免两套 prompt 漂移。"""
@@ -359,7 +349,6 @@ def _prepare(context, facts):
         "local_crisis": bool(CRISIS_PATTERN.search(text)),
     }
 
-
 def analyze(context, facts=None, llm_config=None):
     text = context["text"]
     persona = normalize_persona(context.get("persona"))
@@ -391,7 +380,7 @@ def analyze(context, facts=None, llm_config=None):
     result = _fallback(text)
     result.update({"source": "fallback", "model": None, "persona": persona})
     if llm_config and llm_config.get("source") == "server":
-        # 默认模型是部署方配的，让用户去核对自己的密钥没有意义。
+        # 默认模型由部署方配置，降级文案不引导用户检查密钥。
         result["summary"] = "本次默认模型接口未返回有效结果，已临时使用本地规则模型。"
         result["response"] = (
             "这次没能连上默认模型，先用本地规则给你一个基础回应。"
@@ -399,13 +388,12 @@ def analyze(context, facts=None, llm_config=None):
         )
     elif llm_config:
         result["summary"] = "本次大模型接口未返回有效结果，已临时使用本地规则模型。请在「AI 设置」中检查接口地址、密钥和模型名称。"
-        # 用户明明配了模型，再说"配置大模型后…"会让人以为没配成功，这里换成如实的说明。
+        # 自有 API 的降级文案按已配置的事实描述。
         result["response"] = (
             "这次没能连上你配置的模型，先用本地规则给你一个基础回应。"
             "可以在「AI 设置」里核对接口地址、密钥和模型名称，或稍后重试。"
         )
     return result
-
 
 _JSON_UNESCAPE = {'"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f",
                   "n": "\n", "r": "\r", "t": "\t"}
@@ -417,10 +405,8 @@ _STREAM_ORDER_HINT = (
     "suggestion、followUpQuestion、riskLevel。字段集合和取值规则不变。\n"
 )
 
-
 def _partial_response(raw):
     """从未完成的 JSON 文本里尽力取出 response 字段的当前值。
-
     模型还在吐字时 JSON 不完整，不能直接 json.loads；这里按字符扫描，
     遇到未转义的引号即认为该字段已结束。
     """
@@ -454,14 +440,11 @@ def _partial_response(raw):
     # 部分网关把 emoji 转义成两个 \uXXXX 代理对，单独解码会出现半个字符。
     return "".join(out).encode("utf-16", "surrogatepass").decode("utf-16", "surrogatepass")
 
-
 _TOKEN_CHUNK = 2
 _TOKEN_INTERVAL = 0.05
 
-
 def _paced_tokens(text):
     """把本地规则模式的固定文案切成小片，按接近模型输出的节奏吐出。
-
     规则模式没有网络往返，一次 yield 整段会让前端瞬间刷满，看不出流式效果；
     这里按 2 字一片、50ms 一片的速度发，总时长和真实模型的首包节奏接近。
     """
@@ -469,10 +452,8 @@ def _paced_tokens(text):
         yield text[i:i + _TOKEN_CHUNK]
         time.sleep(_TOKEN_INTERVAL)
 
-
 def analyze_stream(context, facts=None, llm_config=None):
     """流式分析：产出 ("token", 文本增量) 与 ("result", 最终结果)。
-
     流式失败（网络错误、模型不支持 stream、JSON 不合法）时退回一次性请求，
     仍然只在最后产出 result，不让前端拿到半截结果。
     """
@@ -487,12 +468,10 @@ def analyze_stream(context, facts=None, llm_config=None):
             yield ("token", piece)
         yield ("result", result)
         return
-
     prepared = _prepare(context, facts)
     spec, example, user_prompt = prepared["spec"], prepared["example"], prepared["user_prompt"]
     local_crisis = prepared["local_crisis"]
     prompt = spec["system"] + _STREAM_ORDER_HINT + example + user_prompt
-
     buffer = []
     emitted = 0
     streamed_ok = False
@@ -509,7 +488,6 @@ def analyze_stream(context, facts=None, llm_config=None):
     except Exception as exc:  # noqa: BLE001 - 流式失败要能退回一次性请求
         print(f"[AI] 流式输出失败，退回一次性请求：{type(exc).__name__}: {exc}")
         buffer = []
-
     if buffer:
         raw = "".join(buffer)
         try:
@@ -525,7 +503,6 @@ def analyze_stream(context, facts=None, llm_config=None):
             result.update({"source": "llm", "model": model, "persona": persona})
             yield ("result", result)
             return
-
     result = analyze(context, facts, llm_config=llm_config)
     if streamed_ok and result.get("source") != "llm":
         # 已经给前端吐过字了，最终却降级：明确告知，避免前端把半截文字当成完整回应。
@@ -536,7 +513,6 @@ def analyze_stream(context, facts=None, llm_config=None):
         for piece in _paced_tokens(result.get("response") or ""):
             yield ("token", piece)
     yield ("result", result)
-
 
 def generate_insights(payload, llm_config=None):
     if not describe(llm_config or {"provider": "none"}).get("enabled"):

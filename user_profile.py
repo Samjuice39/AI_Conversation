@@ -3,17 +3,14 @@
 from statistics import mean
 import re
 
-
 _NICKNAME_CANDIDATES = ("宝宝", "宝贝", "亲爱的", "小可爱", "小朋友", "小助手", "同学")
 _NAME_PATTERN = re.compile(r"^[\u4e00-\u9fffA-Za-z0-9_]{1,12}$")
-
 
 def clean_preferred_name(value):
     """清理用户填写的称呼；不合法就返回空字符串。"""
     name = re.sub(r"\s+", "", str(value or "").strip())
     name = re.sub(r"[吧呀哦啊哈]$", "", name)
     return name if _NAME_PATTERN.fullmatch(name) else ""
-
 
 def infer_nickname(text):
     """从“宝宝，……”“叫我小明”这类表达中推断称呼。"""
@@ -28,13 +25,11 @@ def infer_nickname(text):
             return nickname
     return ""
 
-
 def _connect(db_path):
     import sqlite3
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     return conn
-
 
 def _rate(rows):
     if not rows:
@@ -42,19 +37,15 @@ def _rate(rows):
     helpful = sum(1 for row in rows if row["feedback"] == "helpful")
     return helpful / len(rows)
 
-
 def _avg_response_len(rows):
     return mean(len(row["response"] or "") for row in rows) if rows else 0
 
-
 _NEGATIVE_CODES = {1, 3, 4, 5}
-
 
 def _negative_load(rows):
     """负面情绪的强度和，用来比较对话开头和结尾。"""
     return sum((row["intensity"] or 0) for row in rows
                if row["emotion_code"] in _NEGATIVE_CODES)
-
 
 def _trajectory_stats(conn, user_id):
     """按对话比较开头与结尾，找“负面明显→趋于平稳”的片段。"""
@@ -70,11 +61,9 @@ def _trajectory_stats(conn, user_id):
     except Exception:
         # 旧库无 conversation_id 时跳过。
         return None
-
     groups = {}
     for row in rows:
         groups.setdefault(row["conversation_id"], []).append(row)
-
     improved = []
     worked_rows = []
     for items in groups.values():
@@ -87,14 +76,12 @@ def _trajectory_stats(conn, user_id):
         if first_neg and (last_neg == 0 or last_load <= first_load - 2):
             improved.append(items)
             worked_rows.extend(last)
-
     if not improved:
         return {
             "conversations": len([g for g in groups.values() if len(g) >= 4]),
             "improved": 0,
             "improvementRate": 0.0,
         }
-
     analyzed = len([g for g in groups.values() if len(g) >= 4])
     return {
         "conversations": analyzed,
@@ -104,7 +91,6 @@ def _trajectory_stats(conn, user_id):
         "workedWithoutSuggestion": _majority_empty(worked_rows, "suggestion"),
         "workedWithFollowup": _majority_nonempty(worked_rows, "follow_up"),
     }
-
 
 def _dominant_persona(rows):
     counts = {}
@@ -116,14 +102,11 @@ def _dominant_persona(rows):
         return None
     return max(counts, key=counts.get)
 
-
 def _majority_empty(rows, field):
     return bool(rows) and sum(1 for row in rows if not (row[field] or "").strip()) / len(rows) >= 0.6
 
-
 def _majority_nonempty(rows, field):
     return bool(rows) and sum(1 for row in rows if (row[field] or "").strip()) / len(rows) >= 0.6
-
 
 def _trajectory_hints(trajectory):
     if not trajectory or trajectory.get("improved", 0) < 1:
@@ -141,10 +124,8 @@ def _trajectory_hints(trajectory):
         hints.append("这些对话里更多出现追问")
     return hints
 
-
 def build_profile(db_path, user_id, limit=60):
     """返回最近反馈形成的轻量偏好。
-
     只统计用户主动点过 helpful / not_helpful 的记录，样本不足时明确返回
     “暂不调整”，避免用一两次点击就给人下结论。
     """
@@ -160,7 +141,6 @@ def build_profile(db_path, user_id, limit=60):
         trajectory = _trajectory_stats(conn, user_id)
     finally:
         conn.close()
-
     trajectory_hints = _trajectory_hints(trajectory)
     if not rows:
         return {
@@ -172,12 +152,10 @@ def build_profile(db_path, user_id, limit=60):
             "trajectory": trajectory,
             "summary": "；".join(trajectory_hints[:2]) or "还没有足够的反馈，先按当前人设自然回应。",
         }
-
     helpful_rows = [row for row in rows if row["feedback"] == "helpful"]
     unhelpful_rows = [row for row in rows if row["feedback"] == "not_helpful"]
     helpful_rate = _rate(rows)
     hints = list(trajectory_hints)
-
     # 回复长度
     if len(helpful_rows) >= 2 and len(unhelpful_rows) >= 2:
         helpful_len = _avg_response_len(helpful_rows)
@@ -186,7 +164,6 @@ def build_profile(db_path, user_id, limit=60):
             hints.append("更接受展开一些的回应，不要只回一句")
         elif unhelpful_len - helpful_len >= 25:
             hints.append("更接受简短回应，先别铺陈")
-
     # 建议密度
     with_suggestion = [row for row in rows if (row["suggestion"] or "").strip()]
     without_suggestion = [row for row in rows if not (row["suggestion"] or "").strip()]
@@ -197,7 +174,6 @@ def build_profile(db_path, user_id, limit=60):
             hints.append("更接受先陪伴、少给方案")
         elif with_rate - without_rate >= 0.25:
             hints.append("更接受具体可执行的建议")
-
     # 追问方式
     with_followup = [row for row in rows if (row["follow_up"] or "").strip()]
     without_followup = [row for row in rows if not (row["follow_up"] or "").strip()]
@@ -208,7 +184,6 @@ def build_profile(db_path, user_id, limit=60):
             hints.append("更愿意被追问一个具体细节")
         elif without_rate - with_rate >= 0.25:
             hints.append("不太喜欢被连续追问")
-
     # 人设偏好，不自动切换
     persona_stats = {}
     for persona in ("gentle", "cool"):
@@ -228,7 +203,6 @@ def build_profile(db_path, user_id, limit=60):
         elif gentle_rate - cool_rate >= 0.15:
             preferred_persona = "gentle"
             hints.append("对温柔陪伴型的反馈更好")
-
     summary = "；".join(hints[:2]) if hints else "反馈还不够稳定，继续按当前人设自然回应。"
     return {
         "feedbackCount": len(rows),
@@ -239,7 +213,6 @@ def build_profile(db_path, user_id, limit=60):
         "trajectory": trajectory,
         "summary": summary,
     }
-
 
 def format_for_prompt(profile):
     """把统计结果压缩成给模型的软约束；没有足够样本就返回 None。"""

@@ -6,7 +6,6 @@ import urllib.request
 # 默认模型
 ANTHROPIC_DEFAULT_MODEL = "claude-opus-5"
 
-
 def _resolve(cfg):
     # 补全配置
     provider = str(cfg.get("provider") or "none").strip().lower()
@@ -137,7 +136,6 @@ def request_completion(system_prompt, user_prompt, config=None):
         text = _call_openai(active, system_prompt, user_prompt, json_mode=True)
     return text, active
 
-
 def chat_completion(messages, tools=None, temperature=0.3, max_tokens=1200,
                     json_mode=False, config=None):
     """返回完整 message，保留 tool_calls；仅支持 OpenAI 兼容接口。"""
@@ -146,7 +144,6 @@ def chat_completion(messages, tools=None, temperature=0.3, max_tokens=1200,
         raise RuntimeError("尚未配置大模型，请先在页面的「AI 设置」中填写接口")
     if active["provider"] == "anthropic":
         raise RuntimeError("工具调用仅支持 OpenAI 兼容接口，请切换 provider")
-
     url = active["baseUrl"].rstrip("/") + "/chat/completions"
     payload = {
         "model": active["model"],
@@ -159,7 +156,6 @@ def chat_completion(messages, tools=None, temperature=0.3, max_tokens=1200,
         payload["tool_choice"] = "auto"
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
-
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=body, method="POST", headers={
         "Content-Type": "application/json",
@@ -177,18 +173,15 @@ def chat_completion(messages, tools=None, temperature=0.3, max_tokens=1200,
         raise RuntimeError(f"接口返回 {e.code} {detail}".strip())
     except urllib.error.URLError as e:
         raise RuntimeError(f"网络不通: {e.reason}")
-
     try:
         message = data["choices"][0]["message"]
     except (KeyError, IndexError, TypeError):
         raise RuntimeError("返回格式不符合预期")
     return message, active
 
-
 def chat_completion_stream(messages, temperature=0.3, max_tokens=1200,
                            json_mode=False, config=None):
     """流式调用，逐块产出文本增量。仅支持 OpenAI 兼容接口。
-
     调用方负责累积文本并在流结束后做结构化校验；本函数不吞异常，
     网络或接口错误直接抛出，由上层决定降级方式。
     """
@@ -197,7 +190,6 @@ def chat_completion_stream(messages, temperature=0.3, max_tokens=1200,
         raise RuntimeError("尚未配置大模型，请先在页面的「AI 设置」中填写接口")
     if active["provider"] == "anthropic":
         raise RuntimeError("流式输出仅支持 OpenAI 兼容接口，请切换 provider")
-
     url = active["baseUrl"].rstrip("/") + "/chat/completions"
     payload = {
         "model": active["model"],
@@ -208,7 +200,6 @@ def chat_completion_stream(messages, temperature=0.3, max_tokens=1200,
     }
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
-
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=body, method="POST", headers={
         "Content-Type": "application/json",
@@ -226,7 +217,6 @@ def chat_completion_stream(messages, temperature=0.3, max_tokens=1200,
         raise RuntimeError(f"接口返回 {e.code} {detail}".strip())
     except urllib.error.URLError as e:
         raise RuntimeError(f"网络不通: {e.reason}")
-
     try:
         for raw in resp:
             line = raw.decode("utf-8", "ignore").strip()

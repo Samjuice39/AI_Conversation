@@ -9,8 +9,7 @@ const ESCAPE_MAP: Record<string, string> = {
 };
 
 /**
- * 按 id 取元素。元素不存在时直接抛错，而不是把 null 带到后面变成
- * "Cannot read properties of null"，这样模板改动漏了元素能第一时间发现。
+ * 按 id 取元素，元素不存在时直接抛错。
  */
 export function $<T extends HTMLElement = HTMLElement>(id: string): T {
   const element = document.getElementById(id);

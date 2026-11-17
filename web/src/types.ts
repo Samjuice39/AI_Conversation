@@ -1,9 +1,8 @@
 /**
  * 后端接口的数据契约。
  *
- * 这里只描述前端真正读写的字段，字段名与 app.py 中的
- * checkin_dict / conversation_dict / build_stats 保持一致。
- * 改动后端返回结构时，先改这里，让类型检查把受影响的渲染逻辑暴露出来。
+ * 仅包含前端读写的字段，与 app.py 的
+ * checkin_dict / conversation_dict / build_stats 对应。
  */
 
 /** 情绪编号，对应 6 套配色（0 平静、1 愤怒、2 开心、3 低落、4 焦虑、5 疲惫）。 */

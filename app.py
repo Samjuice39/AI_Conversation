@@ -28,7 +28,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "emotion_planet.db")
 app = Flask(__name__)
 
-
+# 环境配置模块
 def _load_env_file(path):
     """读取 .env；已存在的环境变量优先。"""
     if not os.path.exists(path):
@@ -41,7 +41,6 @@ def _load_env_file(path):
             key, value = line.split("=", 1)
             os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
-
 _load_env_file(os.path.join(BASE_DIR, ".env"))
 
 # Agent 工作流开关；设为 0 时退回单轮分析。
@@ -52,7 +51,7 @@ try:
 except ValueError:
     SERVER_LLM_DAILY_LIMIT = 10
 
-
+# 分析调度模块
 def run_analysis(text, context, sleep, history, user_id, persona="gentle",
                  custom_persona="", preferred_name="", llm_config=None):
     """先取数，再生成；取数失败退回单轮。"""
@@ -65,7 +64,6 @@ def run_analysis(text, context, sleep, history, user_id, persona="gentle",
         payload["userProfile"] = profile_hint
     if llm_config is None:
         llm_config = get_user_llm_config(user_id)
-
     facts, trace = [], None
     if AGENT_MODE and llm_config:
         try:
@@ -73,7 +71,6 @@ def run_analysis(text, context, sleep, history, user_id, persona="gentle",
             facts, trace = info.get("facts") or [], info.get("trace")
         except Exception as exc:  # noqa: BLE001 - 取数失败就退回纯单轮
             print(f"[Agent] 信息收集失败，按单轮处理：{exc}")
-
     result = ai_analyze(payload, facts, llm_config=llm_config)
     result["trace"] = trace
     result["personalization"] = profile
@@ -83,7 +80,6 @@ def run_analysis(text, context, sleep, history, user_id, persona="gentle",
 
 def _load_secret_key():
     """优先用环境变量；否则读本地 .secret_key，没有就生成并落盘。
-
     不设固定兜底值：硬编码密钥意味着任何人拿到源码就能伪造会话。
     """
     env_key = os.environ.get("EMOTION_SECRET_KEY", "").strip()
@@ -109,15 +105,14 @@ def _load_secret_key():
         print(f"[Auth] 无法写入 .secret_key，本次运行使用临时密钥（重启后需重新登录）：{exc}")
     return key
 
-
 app.secret_key = _load_secret_key()
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax")
 
 CONTEXTS = {"study", "family", "peers", "sensory", "daily", "other"}
 PERSONAS = {"gentle", "cool", "custom"}
 
-
 @contextmanager
+# 数据库模块
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -126,7 +121,6 @@ def get_db():
             yield conn
     finally:
         conn.close()
-
 
 def init_db():
     with get_db() as conn:
@@ -223,10 +217,9 @@ def init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_checkins_conversation ON checkins(conversation_id, id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations(user_id, updated_at)")
 
-
 init_db()
 
-
+# 鉴权模块
 def current_user():
     uid = session.get("user_id")
     if uid is None:
@@ -235,18 +228,15 @@ def current_user():
         row = conn.execute("SELECT id, username FROM users WHERE id = ?", (uid,)).fetchone()
     return (row["id"], row["username"]) if row else None
 
-
 def require_user():
     user = current_user()
     if not user:
         raise PermissionError("请先登录")
     return user
 
-
 @app.errorhandler(PermissionError)
 def unauthorized(error):
     return jsonify({"ok": False, "error": str(error)}), 401
-
 
 def checkin_dict(row):
     return {
@@ -263,7 +253,6 @@ def checkin_dict(row):
         "riskLevel": row["risk_level"], "source": row["source"], "model": row["model"],
         "feedback": row["feedback"], "feedbackAt": row["feedback_at"],
     }
-
 
 @app.route("/api/auth/register", methods=["POST"])
 def register():
@@ -287,7 +276,6 @@ def register():
     session["user_id"] = uid
     return jsonify({"ok": True, "username": username})
 
-
 @app.route("/api/auth/login", methods=["POST"])
 def login():
     body = request.get_json(silent=True) or {}
@@ -299,12 +287,10 @@ def login():
     session["user_id"] = row["id"]
     return jsonify({"ok": True, "username": row["username"]})
 
-
 @app.route("/api/auth/logout", methods=["POST"])
 def logout():
     session.clear()
     return jsonify({"ok": True})
-
 
 @app.route("/api/auth/account", methods=["DELETE"])
 def delete_account():
@@ -325,7 +311,6 @@ def delete_account():
     session.clear()
     return jsonify({"ok": True})
 
-
 @app.route("/api/auth/me")
 def me():
     user = current_user()
@@ -337,7 +322,7 @@ def me():
     return jsonify({"ok": True, "username": user[1] if user else None,
                     "preferredName": preferred_name})
 
-
+# 模型配置与额度模块
 def get_server_llm_config():
     """部署方在 .env 里配一次，没填自己 API 的账号共用这份默认配置。"""
     api_key = os.environ.get("EMOTION_LLM_API_KEY", "").strip()
@@ -355,7 +340,6 @@ def get_server_llm_config():
         "timeout": timeout, "source": "server",
     }
 
-
 def get_own_llm_config(user_id):
     with get_db() as conn:
         row = conn.execute(
@@ -369,11 +353,9 @@ def get_own_llm_config(user_id):
         "baseUrl": row["base_url"], "timeout": row["timeout"], "source": "own",
     }
 
-
 def get_user_llm_config(user_id):
     """账号自己的配置优先；没配就走部署方的默认模型，不要求用户自带 key。"""
     return get_own_llm_config(user_id) or get_server_llm_config()
-
 
 def get_server_quota(user_id):
     """默认模型当日用量；日期与业务记录一致，使用服务器本地时间。"""
@@ -389,7 +371,6 @@ def get_server_quota(user_id):
         "remaining": max(0, SERVER_LLM_DAILY_LIMIT - used),
     }
 
-
 def reserve_server_quota(user_id):
     """原子占用一次额度，避免同一账号的并发请求同时越过上限。"""
     with get_db() as conn:
@@ -401,7 +382,6 @@ def reserve_server_quota(user_id):
         """, (user_id, SERVER_LLM_DAILY_LIMIT))
     return cursor.rowcount == 1
 
-
 def release_server_quota(user_id):
     """模型失败、降级或未保存时返还预留额度。"""
     with get_db() as conn:
@@ -409,7 +389,6 @@ def release_server_quota(user_id):
             UPDATE llm_daily_usage SET used = MAX(0, used - 1)
             WHERE user_id = ? AND usage_date = date('now', 'localtime')
         """, (user_id,))
-
 
 def quota_exceeded_response(user_id):
     quota = get_server_quota(user_id)
@@ -419,7 +398,6 @@ def quota_exceeded_response(user_id):
                  "明天自动恢复；也可以在「AI 设置」中改用自己的 API。",
         "code": "QUOTA_EXCEEDED", "quota": quota,
     }), 429
-
 
 def prepare_llm_request(user_id, text=""):
     """返回 (模型配置, 是否预留了共享额度, 超额响应)。危机表达始终可走本地规则。"""
@@ -432,10 +410,8 @@ def prepare_llm_request(user_id, text=""):
         return None, False, None
     return config, False, quota_exceeded_response(user_id)
 
-
 def llm_request_succeeded(result):
     return bool(result.get("model")) and result.get("source") in ("llm", "agent")
-
 
 def public_ai_settings(user_id):
     # enabled 只表示「这个账号有没有自己的配置」，默认模型不影响它。
@@ -450,7 +426,6 @@ def public_ai_settings(user_id):
         "serverModel": default["model"] if default else "",
         "quota": get_server_quota(user_id) if default and not config else None,
     }
-
 
 @app.route("/api/ai/status")
 def ai_status():
@@ -470,7 +445,6 @@ def ai_status():
         description["source"] = "fallback"
     return jsonify({"ok": True, "llm": description})
 
-
 @app.route("/api/ai/settings", methods=["GET", "PUT", "DELETE"])
 def ai_settings():
     user = require_user()
@@ -480,7 +454,6 @@ def ai_settings():
         with get_db() as conn:
             conn.execute("DELETE FROM user_ai_settings WHERE user_id = ?", (user[0],))
         return jsonify({"ok": True})
-
     body = request.get_json(silent=True) or {}
     api_key = str(body.get("apiKey") or "").strip()
     model = str(body.get("model") or "").strip()
@@ -510,12 +483,8 @@ def ai_settings():
         """, (user[0], api_key, model, base_url))
     return jsonify({"ok": True, "settings": public_ai_settings(user[0])})
 
-
-# ---------------- 本地语音依赖自检（缺什么自动装什么） ----------------
-# 目标：别人拿到项目只要 python app.py，缺 funasr/torch 时自动补装；
-# 装不上也不影响文字对话，语音自动退回浏览器在线识别。
+# 语音依赖自检模块
 ASR_AUTO_INSTALL = os.environ.get("ASR_AUTO_INSTALL", "1").lower() not in ("0", "false", "no", "off")
-# 顺序有讲究：先 torch，再 torchaudio，最后 funasr（funasr 依赖前两者）。
 _ASR_DEPS_MODULES = (("torch", "torch"), ("torchaudio", "torchaudio"), ("funasr", "funasr"))
 _asr_deps_lock = threading.Lock()
 _ASR_DEPS_STARTED = False
@@ -523,7 +492,6 @@ _asr_deps = {
     "state": "unknown",  # unknown / present / installing / installed / failed / missing / disabled
     "missing": [], "message": "", "updatedAt": None, "autoInstall": ASR_AUTO_INSTALL,
 }
-
 
 def asr_deps_missing():
     """只查包是否存在，不真正导入，调用很快。"""
@@ -537,17 +505,14 @@ def asr_deps_missing():
             missing.append(package)
     return missing
 
-
 def asr_deps_state():
     with _asr_deps_lock:
         return dict(_asr_deps)
-
 
 def _set_asr_deps(**kwargs):
     with _asr_deps_lock:
         _asr_deps.update(kwargs)
         _asr_deps["updatedAt"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
 
 def _pip_install(packages):
     """用当前解释器装包，避免装到另一个 Python 上。"""
@@ -563,7 +528,6 @@ def _pip_install(packages):
         return True, "安装成功"
     tail = ((proc.stderr or "") + (proc.stdout or "")).strip()[-600:]
     return False, tail or f"pip 退出码 {proc.returncode}"
-
 
 def _asr_deps_worker(missing):
     ok, detail = _pip_install(missing)
@@ -581,7 +545,6 @@ def _asr_deps_worker(missing):
         return
     _set_asr_deps(state="installed", missing=[], message="依赖已就绪")
     print("[ASR] 依赖安装完成，本地语音可用")
-
 
 def start_asr_deps_check():
     """启动时自检；缺依赖就后台补装，不阻塞 Web 服务启动。重复调用无副作用。"""
@@ -606,7 +569,6 @@ def start_asr_deps_check():
                   message="正在后台安装：" + " ".join(missing) + "（首次约几分钟，不影响文字对话）")
     threading.Thread(target=_asr_deps_worker, args=(missing,), daemon=True).start()
 
-
 def wait_asr_deps(timeout=900):
     """等依赖状态脱离 installing，预热模型前用。"""
     deadline = time.time() + timeout
@@ -617,23 +579,17 @@ def wait_asr_deps(timeout=900):
         time.sleep(3)
     return "timeout"
 
-
-# ---------------- 本地语音识别（SenseVoice-Small，离线推理） ----------------
-# 完全跑在本机，不经过任何在线语音服务。前端把麦克风录音转成 16k 单声道 WAV
-# 传上来，这里落临时文件后交给 sensevoice_asr 识别，识别完就删。
+# 语音识别模块
 ASR_MAX_BYTES = int(os.environ.get("ASR_MAX_BYTES", 20 * 1024 * 1024))
 ASR_DEVICE = os.environ.get("ASR_DEVICE", "cpu")
-# ASR_MODE=off 可以整体关掉，前端会自动退回浏览器在线识别。
 ASR_ENABLED = os.environ.get("ASR_MODE", "local").lower() not in ("off", "0", "false", "no")
-# SenseVoice 是 CPU 推理，几个请求同时进来只会互相抢核心，串行更稳。
+# CPU 推理，请求串行处理。
 _asr_lock = threading.Lock()
-
 
 def _asr_module():
     """按需导入：没装 funasr 时不影响应用启动，只是语音功能不可用。"""
     import sensevoice_asr
     return sensevoice_asr
-
 
 @app.route("/api/asr/status")
 def asr_status():
@@ -663,13 +619,11 @@ def asr_status():
         info["reason"] = "未发现本地权重，首次识别会联网下载约 900MB"
     return jsonify({"ok": True, "asr": info})
 
-
 @app.route("/api/asr", methods=["POST"])
 def asr_transcribe():
     require_user()
     if not ASR_ENABLED:
         return jsonify({"ok": False, "error": "本地语音识别已关闭"}), 503
-
     upload = request.files.get("audio")
     if upload is None:
         return jsonify({"ok": False, "error": "没有收到音频数据"}), 400
@@ -678,16 +632,13 @@ def asr_transcribe():
         return jsonify({"ok": False, "error": "录音文件过大，请控制在 20MB 以内"}), 413
     if len(data) < 3200:  # 16k/16bit 单声道，约 0.1 秒
         return jsonify({"ok": False, "error": "录音太短，请说完再停止"}), 400
-
     try:
         module = _asr_module()
     except Exception as exc:  # noqa: BLE001
         return jsonify({"ok": False, "error": f"本地识别不可用：{exc}"}), 503
-
     language = str(request.form.get("language") or "auto").strip()
     if language not in module.LANGUAGES:
         language = "auto"
-
     tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
@@ -704,7 +655,6 @@ def asr_transcribe():
                 os.remove(tmp_path)
             except OSError:
                 pass
-
     return jsonify({
         "ok": True, "engine": "sensevoice-local",
         "text": result["text"], "language": result["language"],
@@ -713,13 +663,12 @@ def asr_transcribe():
         "eventsText": result["events_text"], "elapsed": result["elapsed"],
     })
 
-
+# 话题模块
 def conversation_dict(row):
     return {
         "id": row["id"], "title": row["title"], "createdAt": row["created_at"],
         "updatedAt": row["updated_at"], "preview": row["preview"] or "还没有消息",
     }
-
 
 @app.route("/api/conversations")
 def conversations():
@@ -732,7 +681,6 @@ def conversations():
         """, (user[0],)).fetchall()
     return jsonify({"ok": True, "conversations": [conversation_dict(row) for row in rows]})
 
-
 @app.route("/api/conversations", methods=["POST"])
 def create_conversation():
     user = require_user()
@@ -743,7 +691,6 @@ def create_conversation():
         )
         row = conn.execute("SELECT id, title, created_at, updated_at, NULL AS preview FROM conversations WHERE id = ?", (cursor.lastrowid,)).fetchone()
     return jsonify({"ok": True, "conversation": conversation_dict(row)})
-
 
 @app.route("/api/conversations/<int:conversation_id>", methods=["DELETE"])
 def delete_conversation(conversation_id):
@@ -760,7 +707,6 @@ def delete_conversation(conversation_id):
         conn.execute("DELETE FROM conversations WHERE id = ? AND user_id = ?", (conversation_id, user[0]))
     return jsonify({"ok": True})
 
-
 @app.route("/api/conversations/<int:conversation_id>/messages")
 def conversation_messages(conversation_id):
     user = require_user()
@@ -771,7 +717,7 @@ def conversation_messages(conversation_id):
         rows = conn.execute("SELECT * FROM checkins WHERE conversation_id = ? ORDER BY id", (conversation_id,)).fetchall()
     return jsonify({"ok": True, "records": [checkin_dict(row) for row in rows]})
 
-
+# 对话模块
 def _parse_chat_request(body):
     """校验并归一化对话请求体；失败返回 (None, (payload, status))。"""
     text = str(body.get("text") or "").strip()
@@ -795,10 +741,8 @@ def _parse_chat_request(body):
         "rawConversationId": body.get("conversationId"),
     }, None
 
-
 def _prepare_chat_context(user_id, params):
     """解析话题、更新称呼并读取近期历史，返回 (conversation_id, history, preferred_name)。
-
     话题编号非法抛 ValueError（400），话题不存在抛 LookupError（404）。
     """
     text = params["text"]
@@ -851,7 +795,6 @@ def _prepare_chat_context(user_id, params):
     } for row in reversed(rows)]
     return conversation_id, history, preferred_name
 
-
 def _save_checkin(user_id, conversation_id, params, result):
     """写入一条记录并返回前端要的格式；话题已被删除时返回 None。"""
     text = params["text"]
@@ -884,7 +827,6 @@ def _save_checkin(user_id, conversation_id, params, result):
     payload["personalization"] = result.get("personalization")
     return payload
 
-
 def _chat_params_or_error():
     """解析请求并准备话题；出错时返回 (None, None, None, (payload, status))。"""
     user = require_user()
@@ -899,7 +841,6 @@ def _chat_params_or_error():
     except LookupError as exc:
         return None, None, None, ({"ok": False, "error": str(exc)}, 404)
     return user, params, (conversation_id, history, preferred_name), None
-
 
 @app.route("/api/chat", methods=["POST"])
 def chat():
@@ -927,7 +868,6 @@ def chat():
         return jsonify({"ok": False, "error": "话题已被删除，本次回复未保存"}), 404
     return jsonify({"ok": True, "result": payload})
 
-
 @app.route("/api/chat/stream", methods=["POST"])
 def chat_stream():
     """SSE 流式对话：status / trace / token / final / error 五类事件。"""
@@ -939,10 +879,8 @@ def chat_stream():
     llm_config, reserved, quota_error = prepare_llm_request(user_id, params["text"])
     if quota_error:
         return quota_error
-
     def event(payload):
         return "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
-
     def generate():
         charge_quota = False
         try:
@@ -956,7 +894,6 @@ def chat_stream():
             profile_hint = format_for_prompt(profile)
             if profile_hint:
                 payload["userProfile"] = profile_hint
-
             facts, trace = [], []
             if AGENT_MODE and llm_config:
                 yield event({"type": "status", "stage": "agent", "message": "正在查看近期记录"})
@@ -968,7 +905,6 @@ def chat_stream():
                     print(f"[Agent] 信息收集失败，按单轮处理：{exc}")
                 for step in trace:
                     yield event({"type": "trace", "step": step})
-
             yield event({"type": "status", "stage": "generate", "message": "正在组织回应"})
             result = None
             for kind, value in analyze_stream(payload, facts, llm_config=llm_config):
@@ -978,7 +914,6 @@ def chat_stream():
                     result = value
             if result is None:
                 raise RuntimeError("模型没有返回结果")
-
             result["trace"] = trace
             result["personalization"] = profile
             if facts:
@@ -995,13 +930,13 @@ def chat_stream():
         finally:
             if reserved and not charge_quota:
                 release_server_quota(user_id)
-
     return Response(stream_with_context(generate()), mimetype="text/event-stream", headers={
         "Cache-Control": "no-cache",
         "X-Accel-Buffering": "no",
     })
 
 @app.route("/api/checkins/<int:checkin_id>/feedback", methods=["POST"])
+# 反馈与统计模块
 def feedback(checkin_id):
     user = require_user()
     body = request.get_json(silent=True) or {}
@@ -1017,7 +952,6 @@ def feedback(checkin_id):
         return jsonify({"ok": False, "error": "记录不存在"}), 404
     return jsonify({"ok": True, "feedback": value})
 
-
 @app.route("/api/history")
 def history():
     user = require_user()
@@ -1031,7 +965,6 @@ def history():
             (user[0], limit),
         ).fetchall()
     return jsonify({"ok": True, "records": [checkin_dict(row) for row in rows]})
-
 
 def build_stats(user_id):
     with get_db() as conn:
@@ -1070,14 +1003,12 @@ def build_stats(user_id):
         "recent": [dict(row) for row in recent],
     }
 
-
 @app.route("/api/insights")
 def insights():
     user = require_user()
     stats = build_stats(user[0])
     stats.pop("recent", None)
     return jsonify({"ok": True, "stats": stats})
-
 
 @app.route("/api/insights/ai", methods=["POST"])
 def ai_insights():
@@ -1097,11 +1028,10 @@ def ai_insights():
         release_server_quota(user[0])
     return jsonify({"ok": True, "report": result})
 
-
 @app.route("/")
+# 页面托管模块
 def index():
     return send_from_directory(BASE_DIR, "emotion-planet.html" if current_user() else "login.html")
-
 
 @app.route("/<path:filename>")
 def static_files(filename):
@@ -1109,16 +1039,13 @@ def static_files(filename):
         return jsonify({"ok": False, "error": "not found"}), 404
     return send_from_directory(BASE_DIR, filename)
 
-
-# 导入即自检：这样 python app.py、flask run、gunicorn 都能触发自动补装。
+# 启动入口模块
 start_asr_deps_check()
-
 
 if __name__ == "__main__":
     deps_now = asr_deps_state()
     if deps_now["state"] == "installing":
         print(f"[ASR] {deps_now['message']}")
-
     # 首次识别要加载 900MB 权重（约十几秒）。依赖与权重都就位时后台先热起来，
     # 用户第一次点语音就不用干等；缺依赖或没权重就跳过，不在启动时被动联网下载。
     if ASR_ENABLED and os.environ.get("ASR_PRELOAD", "1").lower() not in ("0", "false", "no", "off"):
@@ -1137,8 +1064,6 @@ if __name__ == "__main__":
                 print("[ASR] 本地语音模型已就绪")
             except Exception as exc:  # noqa: BLE001 - 预热失败不影响其他功能
                 print(f"[ASR] 预热失败，不影响文字对话：{exc}")
-
         threading.Thread(target=_warmup, daemon=True).start()
-
     print("情绪星球 · 纯软件 AI Agent：http://127.0.0.1:5001")
     app.run(host=os.environ.get("HOST", "127.0.0.1"), port=int(os.environ.get("PORT", "5001")), debug=False)

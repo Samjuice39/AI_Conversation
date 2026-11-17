@@ -379,7 +379,7 @@ export function setupLocalVoice(): void {
 
   void fetchAsrStatus().then((asr) => {
     if (asr && asr.available) {
-      // 本地识别是卖点，但界面默认一声不响，用户不知道音频其实没出本机。
+      // 就绪提示中说明音频仅在本机识别。
       status.textContent = asr.cached ? READY_HINT : "本地识别就绪，但权重未随包分发，首次识别会联网下载约 900MB";
       return;
     }

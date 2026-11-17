@@ -9,7 +9,7 @@
 .account-delete{border:0;background:transparent;color:var(--danger);font-size:12px;padding:7px 2px}.conversation-item{display:flex;align-items:center;padding:4px 6px 4px 0}.conversation-open{flex:1;min-width:0;border:0;background:transparent;text-align:left;padding:7px 4px 7px 11px;color:var(--ink)}.delete-topic{flex:none;width:28px;height:28px;border:0;border-radius:7px;background:transparent;color:#a0a3ae;font-size:18px;line-height:1}.delete-topic:hover{background:#f8e9eb;color:var(--danger)}.account-dialog{max-width:430px}.account-dialog h2{margin:12px 0 8px}.account-dialog p{color:var(--muted);font-size:13px;line-height:1.8}.account-dialog label{display:block;margin:18px 0 7px;font-size:12px}.account-dialog input,.account-dialog select{width:100%;border:1px solid var(--line);border-radius:10px;padding:11px 12px;font:inherit;outline:none;background:#fff}.account-dialog input:focus{border-color:var(--accent)}.dialog-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:20px}.danger-btn{border:0;border-radius:9px;background:var(--danger);color:#fff;padding:9px 14px}.danger-btn:disabled{opacity:.55;cursor:wait}.ai-settings-actions{display:flex;align-items:center;gap:8px}.settings-note{padding:10px 12px;border-radius:9px;background:#f3f4fb;color:#666d86;font-size:12px;line-height:1.7}.settings-status{min-height:20px;color:var(--accent);font-size:12px}.agent-trace{margin-top:9px;padding-top:8px;border-top:1px dashed var(--line)}.agent-trace summary{cursor:pointer;color:var(--muted);font-size:11px;list-style:none;user-select:none;outline:none}.agent-trace summary::-webkit-details-marker{display:none}.agent-trace summary::before{content:"\25B8";display:inline-block;margin-right:5px;transition:transform .15s}.agent-trace[open] summary::before{transform:rotate(90deg)}.agent-trace ol{margin:6px 0 0;padding-left:20px;color:#7b8093;font-size:11px;line-height:1.9}.agent-trace code{background:#f3f4fb;border-radius:5px;padding:1px 5px;font-size:11px;color:#5b6480}.agent-trace .args{color:#a3a7b6}
 </style>
 <style>
-/* ================= 蜡笔手绘风覆盖 ================= */
+/* 蜡笔手绘风覆盖 */
 :root{
   --paper:#FBF6E9; --paper-2:#FFFCF2; --ink:#3A352C; --ink-soft:#6B6459;
   --line:#D9CFBB;
@@ -234,12 +234,12 @@ textarea:focus,select:focus,.options input:focus,.account-dialog input:focus{out
 .footer{border-top:2px dashed var(--line);padding-top:18px}
 .quick button{border-radius:0 !important}
 
-/* ================= 内容区加宽 ================= */
+/* 内容区加宽 */
 /* 原来上限 1240，大屏上两侧各空 200+ 像素，卡片右边框看着像被切掉 */
 .shell{width:min(1680px,calc(100% - 56px))}
 @media (max-width:600px){.shell{width:calc(100% - 24px)}}
 
-/* ================= 页面纵向撑满 ================= */
+/* 页面纵向撑满 */
 /* 原来 .shell 只有内容高，视口比内容高时页脚下面就空出一片纸面；
    改成整页 flex 列 + 确定高度：主区吃掉剩余高度，页脚永远贴底。
    注意这里必须是 height 而不是 min-height，否则 flex 没有"剩余空间"可分，
@@ -254,7 +254,7 @@ main{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;padding-top:1
 /* 极矮窗口（<660px）放弃撑满，老老实实纵向滚动，免得内容被裁 */
 @media (max-height:660px){.shell{height:auto;min-height:100vh}}
 
-/* ================= 横向切页 ================= */
+/* 横向切页 */
 .stage{overflow:hidden;position:relative;flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
 .track{display:flex;align-items:stretch;flex:1 1 auto;min-height:0;transition:transform .5s cubic-bezier(.45,.05,.25,1);will-change:transform}
 .track.to-journey{transform:translateX(-100%)}

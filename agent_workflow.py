@@ -85,7 +85,6 @@ _CN_KEYS = {
     "风险等级": "riskLevel", "风险": "riskLevel", "风险级别": "riskLevel",
 }
 
-
 # 情绪码别名，统一转成 0-5。
 _EMOTION_ALIAS = {
     "calm": 0, "neutral": 0, "平静": 0,
@@ -95,7 +94,6 @@ _EMOTION_ALIAS = {
     "low": 4, "sad": 4, "sadness": 4, "低落": 4, "难过": 4,
     "irritable": 5, "irritated": 5, "angry": 5, "烦躁": 5, "烦": 5,
 }
-
 
 def _normalize(raw):
     """清理围栏、映射键名并修正字段类型。"""
@@ -109,9 +107,7 @@ def _normalize(raw):
         return text
     if not isinstance(data, dict):
         return text
-
     fixed = {_CN_KEYS.get(k, k): v for k, v in data.items()}
-
     # 情绪码 0-5
     code = fixed.get("emotionCode")
     if isinstance(code, str):
@@ -121,14 +117,12 @@ def _normalize(raw):
         fixed["emotionCode"] = int(code)
     else:
         fixed["emotionCode"] = 0
-
     # 强度 1-5
     try:
         intensity = int(float(fixed.get("intensity", 3)))
     except (TypeError, ValueError):
         intensity = 3
     fixed["intensity"] = max(1, min(5, intensity))
-
     # 置信度 0-1，兼容十分制与百分数
     try:
         confidence = float(fixed.get("confidence", 0.7))
@@ -142,20 +136,16 @@ def _normalize(raw):
         else:
             confidence = 0.7
     fixed["confidence"] = round(max(0.0, min(1.0, confidence)), 2)
-
     # 风险等级
     risk = str(fixed.get("riskLevel", "low")).strip().lower()
     fixed["riskLevel"] = risk if risk in ("low", "medium", "high") else "low"
-
     return json.dumps(fixed, ensure_ascii=False)
-
 
 # 工具实现
 def _connect(db_path):
     conn = sqlite3.connect(db_path, timeout=5)
     conn.row_factory = sqlite3.Row
     return conn
-
 
 def _query_recent_records(db_path, user_id, days=7, limit=10):
     """按时间倒序返回最近记录的关键字段。"""
@@ -171,7 +161,6 @@ def _query_recent_records(db_path, user_id, days=7, limit=10):
                ORDER BY created_at DESC LIMIT ?""",
             (user_id, since, limit),
         ).fetchall()
-
     records = []
     for r in rows:
         try:
@@ -189,7 +178,6 @@ def _query_recent_records(db_path, user_id, days=7, limit=10):
         })
     return {"天数": days, "条数": len(records), "记录": records}
 
-
 def _get_emotion_summary(db_path, user_id, days=7):
     """聚合情绪分布、平均强度、高频触发因素与反馈采纳情况。"""
     days = max(1, min(int(days or 7), 90))
@@ -200,17 +188,14 @@ def _get_emotion_summary(db_path, user_id, days=7):
                FROM checkins WHERE user_id = ? AND created_at >= ?""",
             (user_id, since),
         ).fetchall()
-
     if not rows:
         return {"天数": days, "条数": 0, "说明": "该时间段内没有记录"}
-
     dist = {}
     intensities = []
     triggers = {}
     helpful = 0
     not_helpful = 0
     high_risk = 0
-
     for r in rows:
         dist[r["emotion"]] = dist.get(r["emotion"], 0) + 1
         if r["intensity"] is not None:
@@ -226,7 +211,6 @@ def _get_emotion_summary(db_path, user_id, days=7):
                 triggers[t] = triggers.get(t, 0) + 1
         except (TypeError, ValueError):
             pass
-
     top_triggers = sorted(triggers.items(), key=lambda kv: kv[1], reverse=True)[:5]
     total = len(rows)
     return {
@@ -239,7 +223,6 @@ def _get_emotion_summary(db_path, user_id, days=7):
         "高风险记录数": high_risk,
         "采纳率": round(helpful / (helpful + not_helpful), 2) if (helpful + not_helpful) else None,
     }
-
 
 def _search_interventions(query, emotion_code=None):
     """检索干预策略，返回精简结果。"""
@@ -254,7 +237,6 @@ def _search_interventions(query, emotion_code=None):
         ],
     }
 
-
 _DISPATCH = {
     "query_recent_records": lambda args, db, uid: _query_recent_records(
         db, uid, args.get("days", 7), args.get("limit", 10)),
@@ -263,7 +245,6 @@ _DISPATCH = {
     "search_interventions": lambda args, db, uid: _search_interventions(
         args.get("query", ""), args.get("emotion_code")),
 }
-
 
 # 工作流主体
 _AGENT_SYSTEM = """你可以调用工具获取信息后再回应，工具不是必须用的。
@@ -283,7 +264,6 @@ response 绝不能写成步骤清单或待办列表。对方只是在倾诉时�
     f"示例输入：{item[1]}\n示例回应：{item[2]}" for item in _STYLE_EXAMPLES
 )
 
-
 _COLLECT_SYSTEM = """你要判断：为了恰当地回应这个人，需不需要先查一些信息。
 
 可用工具：
@@ -295,7 +275,6 @@ _COLLECT_SYSTEM = """你要判断：为了恰当地回应这个人，需不需�
 - 用户只是想说说、分享心情、或情绪已经很清楚时，不要调用任何工具，直接结束。
 - 最多调用 2 个工具，不要为了显得勤快而查。
 - 只调工具，不要写回应文字。"""
-
 
 def collect(context, db_path, user_id, max_steps=2, llm_config=None):
     """只收集工具结果，不生成用户可见文字。"""
@@ -310,20 +289,16 @@ def collect(context, db_path, user_id, max_steps=2, llm_config=None):
             }, ensure_ascii=False),
         },
     ]
-
     facts = []
     trace = []
     model = None
-
     for step in range(max_steps):
         message, active = chat_completion(messages, tools=TOOLS, temperature=0.3, config=llm_config)
         model = (active or {}).get("model") or model
-
         calls = message.get("tool_calls") or []
         if not calls:
             trace.append({"step": step + 1, "action": "无需更多信息"})
             break
-
         messages.append(message)
         for call in calls:
             fn = call.get("function", {})
@@ -347,9 +322,7 @@ def collect(context, db_path, user_id, max_steps=2, llm_config=None):
                 "tool_call_id": call.get("id"),
                 "content": json.dumps(result, ensure_ascii=False),
             })
-
     return {"facts": facts, "trace": trace, "model": model}
-
 
 def run(context, db_path, user_id, max_steps=3, llm_config=None):
     """执行完整的工具调用流程，返回原始 message 与轨迹。"""
@@ -365,13 +338,10 @@ def run(context, db_path, user_id, max_steps=3, llm_config=None):
             }, ensure_ascii=False),
         },
     ]
-
     trace = []
     active = None
-
     for step in range(max_steps):
         message, active = chat_completion(messages, tools=TOOLS, temperature=0.4, config=llm_config)
-
         calls = message.get("tool_calls") or []
         if not calls:
             # 工具轮草稿不写回上下文，避免污染 JSON 收尾。
@@ -382,10 +352,8 @@ def run(context, db_path, user_id, max_steps=3, llm_config=None):
                 "draft": (message.get("content") or "")[:60],
             })
             break
-
         # 保留 tool_calls 消息，tool 结果才能对应。
         messages.append(message)
-
         for call in calls:
             fn = call.get("function", {})
             name = fn.get("name")
@@ -407,7 +375,6 @@ def run(context, db_path, user_id, max_steps=3, llm_config=None):
                 "tool_call_id": call.get("id"),
                 "content": json.dumps(result, ensure_ascii=False),
             })
-
     # 收尾只输出 JSON。
     messages.append({
         "role": "user",

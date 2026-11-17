@@ -24,7 +24,7 @@ interface StreamProgress {
 /**
  * 统一的 JSON 请求。
  *
- * 401 说明会话过期，直接回登录页——继续留在页面上只会让后续请求全部失败。
+ * 401 时跳转登录页。
  */
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(path, options);
@@ -51,8 +51,7 @@ export function postJson<T>(path: string, body: unknown, method = "POST"): Promi
 /**
  * 读取 SSE 流，返回最终落库的那条记录。
  *
- * 后端按 "data: {...}\n\n" 分帧，这里按空行切块再逐行解析；每收到一块就重置
- * 静默超时，因此"模型在思考"不会被误判成超时，真正卡住才会中断。
+ * 后端按 "data: {...}\n\n" 分帧，按空行切块逐行解析，每收到一块重置静默超时。
  * 中途的 status / trace / token 事件通过 onEvent 交给界面绘制。
  */
 export async function streamChat(

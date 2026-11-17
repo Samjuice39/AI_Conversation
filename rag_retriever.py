@@ -32,7 +32,6 @@ EMOTION_HINTS = {
     5: "烦躁 生气 烦 火大 被打扰",
 }
 
-
 def _tokenize(text):
     """中文切字符 bigram + 单字；英文按单词。"""
     if not text:
@@ -45,30 +44,24 @@ def _tokenize(text):
         tokens.extend(seg)
     return tokens
 
-
 def _field_text(item, name):
     value = item.get(name, "")
     if isinstance(value, list):
         return " ".join(value)
     return value or ""
 
-
 def _load():
     """加载知识库并构建倒排索引（首次调用时执行，之后走缓存）。"""
     if _cache["docs"] is not None:
         return
-
     if not KB_PATH.exists():
         _cache.update({"docs": [], "idf": {}, "avgdl": 0, "postings": {}, "lengths": []})
         return
-
     with KB_PATH.open(encoding="utf-8") as fh:
         docs = json.load(fh)
-
     postings = {}   # token -> {doc_index: weighted_tf}
     lengths = []
     df = {}
-
     for idx, item in enumerate(docs):
         weighted_tf = {}
         doc_len = 0
@@ -81,11 +74,9 @@ def _load():
         for t, w in weighted_tf.items():
             postings.setdefault(t, {})[idx] = w
             df[t] = df.get(t, 0) + 1
-
     n_docs = len(docs)
     idf = {t: math.log(1 + (n_docs - d + 0.5) / (d + 0.5)) for t, d in df.items()}
     avgdl = (sum(lengths) / n_docs) if n_docs else 0
-
     _cache.update({
         "docs": docs,
         "idf": idf,
@@ -94,17 +85,14 @@ def _load():
         "lengths": lengths,
     })
 
-
 def retrieve(query, emotion_code=None, top_k=3, min_score=3.0):
     """按查询文本召回相关干预策略。
-
     参数
     ----
     query : 用户原话
     emotion_code : 0平静 1焦虑 2愉悦 3疲惫 4低落 5烦躁，可为 None
     top_k : 返回条数
     min_score : 低于该分数的条目不返回，避免硬塞无关内容
-
     返回
     ----
     list[dict]，每项含 id / title / content / when / score
@@ -113,21 +101,17 @@ def retrieve(query, emotion_code=None, top_k=3, min_score=3.0):
     docs = _cache["docs"]
     if not docs:
         return []
-
     tokens = _tokenize(query or "")
     if not tokens:
         return []
-
     # 查询扩展
     if emotion_code is not None and emotion_code in EMOTION_HINTS:
         tokens = tokens + _tokenize(EMOTION_HINTS[emotion_code])
-
     scores = {}
     idf = _cache["idf"]
     postings = _cache["postings"]
     lengths = _cache["lengths"]
     avgdl = _cache["avgdl"] or 1.0
-
     for t in set(tokens):
         if t not in postings:
             continue
@@ -136,7 +120,6 @@ def retrieve(query, emotion_code=None, top_k=3, min_score=3.0):
             dl = lengths[idx]
             denom = tf + K1 * (1 - B + B * dl / avgdl)
             scores[idx] = scores.get(idx, 0) + w * tf * (K1 + 1) / denom
-
     # 同情绪加权
     if emotion_code is not None:
         for idx, item in enumerate(docs):
@@ -146,7 +129,6 @@ def retrieve(query, emotion_code=None, top_k=3, min_score=3.0):
                 scores[idx] *= 1.2
             else:
                 scores[idx] *= 0.45
-
     ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
     results = []
     for idx, score in ranked:
@@ -162,14 +144,11 @@ def retrieve(query, emotion_code=None, top_k=3, min_score=3.0):
         })
         if len(results) >= top_k:
             break
-
     return results
-
 
 def format_for_prompt(items):
     """把检索结果整理成适合塞进 prompt 的紧凑结构。"""
     return [{"参考做法": it["title"], "具体步骤": it["content"]} for it in items]
-
 
 def describe():
     """知识库概况，供 /api/ai/status 或调试接口展示。"""
@@ -185,7 +164,6 @@ def describe():
         "by_emotion": by_emotion,
         "backend": "bm25f-char-bigram",
     }
-
 
 if __name__ == "__main__":
     print(describe())
